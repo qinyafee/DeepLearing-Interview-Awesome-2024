@@ -5,21 +5,72 @@
 ![Alt](assert/fuse_conv_bn.png#pic_center=600x400)
 
 ```python
-def fuse_conv_bn(conv, bn):
+import torch
+import torch.nn as nn
 
+def fuse_conv_bn(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
+    # 初始化新卷积层（继承原卷积参数配置）
+    fused_conv = nn.Conv2d(
+        in_channels=conv.in_channels,
+        out_channels=conv.out_channels,
+        kernel_size=conv.kernel_size,
+        stride=conv.stride,
+        padding=conv.padding,
+        dilation=conv.dilation,
+        groups=conv.groups,
+        bias=True,  # 融合后必然有偏置
+        padding_mode=conv.padding_mode
+    )
+    
+    # 获取参数
     std = (bn.running_var + bn.eps).sqrt()
-    bias = bn.bias - bn.running_mean * bn.weight / std
+    gamma = bn.weight
+    beta = bn.bias
+    mu = bn.running_mean
 
-    t = (bn.weight / std).reshape(-1, 1, 1, 1)
-    weights = conv.weight * t
+    # 计算融合权重和偏置
+    scale_factor = gamma / std
+    fused_weight = conv.weight * scale_factor.reshape(-1, 1, 1, 1)  # 按通道缩放[1,8](@ref)
 
-    conv = nn.Conv2d(3，128，3)
-    conv.weight = torch.nn.Parameter(weights)
-    conv.bias = torch.nn.Parameter(bias)
-    return conv
+    # 处理原卷积偏置（若无则置零）
+    b_conv = conv.bias if conv.bias is not None else torch.zeros_like(mu)
+    fused_bias = scale_factor * (b_conv - mu) + beta  # 公式推导[1,8](@ref)
+
+    # 更新参数
+    fused_conv.weight = nn.Parameter(fused_weight)
+    fused_conv.bias = nn.Parameter(fused_bias)
+    
+    return fused_conv
 ```
 
 # 02. 多卡BN如何处理（Synchronize BN）
+
+​(1) 同步统计量: 各 GPU 卡计算局部均值和方差后，通过 ​All-Gather 通信 汇总全局统计量
+(2) 归一化与反向传播:使用全局统计量归一化各卡数据，反向传播时梯度需同步
+
+```python
+# 各卡计算局部均值与方差
+local_mean = torch.mean(x, dim=[0, 2, 3])  # 假设输入 x 的形状为 [B, C, H, W]
+local_var = torch.var(x, dim=[0, 2, 3], unbiased=False)
+
+# All-Gather 全局统计量
+world_size = dist.get_world_size()
+global_mean = torch.zeros_like(local_mean).repeat(world_size)
+global_var = torch.zeros_like(local_var).repeat(world_size)
+dist.all_gather(list(global_mean.chunk(world_size)), local_mean)
+dist.all_gather(list(global_var.chunk(world_size)), local_var)
+
+# 计算全局均值和方差（需处理 batch size 不均分的情况）
+total_batch = sum(batch_sizes)  # 各卡实际 batch size
+global_mean = (global_mean * batch_sizes).sum() / total_batch
+global_var = (global_var * batch_sizes).sum() / total_batch + ...  # 包含均值差异项
+
+# 归一化（训练模式）
+x_normalized = (x - global_mean) / torch.sqrt(global_var + eps)
+# 更新 running_mean 和 running_var（需同步）
+running_mean = momentum * running_mean + (1 - momentum) * global_mean
+running_var = momentum * running_var + (1 - momentum) * global_var
+```
 
 - 首先解释下为什么需要同步 BN 操作，在多卡训练时，针对某些 BS 较小的任务（比如实例分割）每张卡计算得到的统计量可能与整体数据样本具有较大差异。换言之，针对具有大 BS 的分类任务，在训练阶段就无需使用多卡同步BN。
 - 然后回答下多卡 BN 的要同步哪些东西，回想下多卡BN里面需要计算的参数均值和方差，多卡同步就是同步每张卡上对应的 BN 层分别计算出相应的统计量。
@@ -32,6 +83,10 @@ def fuse_conv_bn(conv, bn):
 
 # 03. TensorRT为什么能让模型跑更快
 
+其一，TensorRT支持INT8和FP16的计算。深度学习网络在训练时，通常使用 32 位或 16 位数据。TensorRT则在网络的推理时选用不这么高的精度，达到加速推断的目的。
+
+其二，TensorRT对于网络结构进行了重构，把一些能够合并的运算合并在了一起，针对GPU的特性做了优化：
+
 - 首先，TRT实现对于网络结构的垂直整合，即将目前主流神经网络的Conv、BN、Relu三个层融合为了一个层，所谓CBR
 
 - 然后，TRT可以对网络结构做水平组合，水平组合是指将输入为相同张量和执行相同操作的层融合一起，比如将三个相连的1×1的CBR为一个大的1×1的CBR。
@@ -39,6 +94,9 @@ def fuse_conv_bn(conv, bn):
 - 最后，对于concat层，将contact层的输入直接送入下面的操作中，不用单独进行concat后在输入计算，相当于减少了一次传输吞吐。
 
 详细参考：https://zhuanlan.zhihu.com/p/64933639
+
+TensorRT只负责模型的推理（inference）过程，一般不用TensorRT来训练模型的哈。
+
 
 # 04. 损失函数的应用-合页损失
 
@@ -56,10 +114,21 @@ def fuse_conv_bn(conv, bn):
 
 # 06.神经网络引入注意力机制后效果降低的原因
 
+1. 注意力模块的加入会增加模型参数量，当原模型处于欠拟合状态​（如参数量不足或数据量过大）时，注意力机制能通过增强特征选择能力提升性能。但若原模型已处于过拟合状态​（如模型容量过高或数据量不足），额外增加的参数会加剧过拟合，导致验证集指标下降。实验表明，在CIFAR-10数据集上，当WideResNet宽度从8d增加到64d时，使用CBAM注意力模块的模型在过拟合状态下验证集准确率下降约3%
+2. 其他原因
+
+-------
 第一个角度是模型的欠拟合与过拟合；大部分注意力模块是有参数的，添加注意力模块会导致模型的复杂度增加。如果添加attention前模型处于欠拟合状态，那么增加参数是有利于模型学习的，性能会提高。
 
 # 07. 为什么交叉熵可以作为损失函数
 
+熵是服从某一特定概率分布事件的理论最小平均编码长度，所以交叉熵只可能>=熵。换句话说，如果我们的估计是完美的，即Q=P，那么有H(P,Q) = H(P)，否则，H(P,Q) > H(P)。
+如果预测完全正确，交叉熵的值就为0。
+https://zhuanlan.zhihu.com/p/149186719
+​当真实分布 P 固定时，最小化KL散度（Kullback-Leibler Divergence）等价于最小化交叉熵（Cross Entropy）。
+![alt text](image.png)
+
+--------
 我们希望模型学到的分布和训练数据的分布相同，即希望最小化KL散度(一般用于计算两个分布之间的不同，KL散度=交叉熵-熵)，而当训练数据分布是固定的时候，最小化KL散度等价于最小化交叉熵。
 
 从另外一个角度上来理解，如果使用传统的平方误差损失的话，得到的代价函数不是一个凸函数，会有很多的局部最优点；而交叉熵函数会得到一个相对更加平滑的代价曲线。
@@ -82,6 +151,8 @@ n 的高斯分布，并且偏差为0。
 我认为网络学习的是训练数据的空间分布，即训练收敛时，整个输出空间应该是输入空间分布的某种稳定投影。从层的角度来看，假如2层网络：A->B，B希望获得稳定输出，但由于每次学习更新导致A也在变化，所以B想稳定就比较难。怎么办，保证A和B的分布一样，这样学习就简单一点，即可以理解成信息流通更流畅。
 
 # 10. MMengine的一些特性
+
+MMEngine 通过 ​标准化接口设计​（如 BaseModel）、模块解耦​（数据集/评测分离）和 ​工程优化​（mim 工具），解决了传统框架代码冗余、兼容性差、扩展成本高等痛点。其特性尤其适合需要快速迭代多任务模型（如多模态算法开发）或部署到异构计算环境的场景。对于研究者，可聚焦算法创新而非工程实现；对于开发者，能显著降低跨平台适配成本。
 
 - 可以通过指定 init_cfg=dict(type='Pretrained', checkpoint='path/to/ckpt') 来加载预训练权重
 
@@ -131,16 +202,28 @@ def parameters(self, recurse=True):
 
 # 12. 激活函数的对比与优缺点
 
-- Sigmoid函数饱和使梯度消失。当神经元的激活在接近0或1处时会饱和，在这些区域梯度几乎为0，这就会导致梯度消失，几乎就有没有信号通过神经传回上一层。
+- Sigmoid函数饱和使梯度消失。当神经元的激活在接近0或1处时会饱和，在这些区域梯度几乎为0，这就会导致梯度消失，几乎就有没有信号通过神经传回上一层。【双侧饱和神经元】
 
 - Tanh解决了Sigmoid的输出是不是零中心的问题，但仍然存在饱和问题。为了防止饱和，现在主流的做法会在激活函数前多做一步batch normalization，尽可能保证每一层网络的输入具有均值较小的、零中心的分布。
 
 - ReLU对于随机梯度下降的收敛有巨大的加速作用；sigmoid和tanh在求导时含有指数运算，而ReLU求导几乎不存在任何计算量。单侧抑制，相对宽阔的激活边界；
+  - 【单侧饱和，还能使得神经元对于噪声干扰更具鲁棒性，为网络引入了稀疏性】
+  - 【神经元死亡：假设bias变得太小，以至于输入激活函数的值总是负的，那么反向传播过程经过该处的梯度恒为0,对应的权重和偏置参数此次无法得到更新】
+  - 【ReLU输出值总是非负，在一次更新中，某一层的w参数要么一起增大，要么一起减小，导致梯度更新方向的锯齿路径】
 
-- Softsign函数表达式：f=min(max(0,x),6),特点：ReLU6 就是普通的 ReLU 但是限制最大输出值为6（对输出值做clip），这是为了在移动端设备float16的低精度的时候，也能有很好的数值分辨率，如果对 ReLU 的激活范围不加限制，输出范围为 0 到正无穷，如果激活值非常大，分布在一个很大的范围内，则低精度的float16无法很好地精确描述如此大范围的数值，带来精度损失。
+- LeakyReLU，解决神经元”死亡“问题。在反向传播过程中，对于LeakyReLU激活函数输入小于零的部分，也可以计算得到梯度(而不是像ReLU一样值为0)，这样就避免了上述梯度方向锯齿问题。
+
+- ReLU6函数表达式：f=min(max(0,x),6),特点：ReLU6 就是普通的 ReLU 但是限制最大输出值为6（对输出值做clip），这是为了在移动端设备float16的低精度的时候，也能有很好的数值分辨率，如果对 ReLU 的激活范围不加限制，输出范围为 0 到正无穷，如果激活值非常大，分布在一个很大的范围内，则低精度的float16无法很好地精确描述如此大范围的数值，带来精度损失。
 
 - SoftPlus 可以作为 ReLu 的一个不错的替代选择，可以看到与 ReLU 不同的是，SoftPlus 的导数是连续的、非零的、无处不在的，这一特性可以防止出现 ReLU 中的 “神经元死亡” 现象。
 
+- ELU(Exponential Linear Unit)。理想的激活函数应满足两个条件，ELU都满足
+  - 输出的分布是零均值的，可以加快训练速度。
+  - 激活函数是单侧饱和的，可以更好的收敛。
+![alt text](image-1.png)
+
+
+https://zhuanlan.zhihu.com/p/172254089
 - 参考链接：http://giantpandacv.com/academic/%E7%AE%97%E6%B3%95%E7%A7%91%E6%99%AE/%E7%BB%BC%E8%BF%B0%E7%B1%BB/%E7%9B%98%E7%82%B9%E5%BD%93%E5%89%8D%E6%9C%80%E6%B5%81%E8%A1%8C%E7%9A%84%E6%BF%80%E6%B4%BB%E5%87%BD%E6%95%B0%E5%8F%8A%E9%80%89%E6%8B%A9%E7%BB%8F%E9%AA%8C/
 
 
@@ -149,13 +232,38 @@ def parameters(self, recurse=True):
 nn.Linear的输入为一个向量，输出也为一个向量，向量的各个维的元素取值范围是连续的。而nn.Embedding的输入只能为离散值，只输入一个离散值也能获取结果，而这个离散值实际上相当于取one-hot之后的向量。
 
 
-# 13. Transformer/CNN/RNN的时间复杂度对比
+处理离散索引（如文本、ID类特征）时优先使用nn.Embedding；
+处理连续特征或需要通用线性变换时使用nn.Linear。
+性能考量：nn.Embedding避免了one-hot编码的高维稀疏性问题，更适合大规模离散数据
 
+```python
+import torch
+import torch.nn as nn
+
+# 定义 Embedding 层（词汇表大小=10，嵌入维度=5）
+embedding = nn.Embedding(num_embeddings=10, embedding_dim=5)
+# 输入为整数索引（形状：[batch_size, seq_length]）
+input_indices = torch.LongTensor([[1, 3], [0, 2]])  # 2个样本，每个样本长度为2
+output = embedding(input_indices)
+print(output.shape)  # 输出形状：torch.Size([2, 2, 5])
+
+# 定义 Linear 层（输入特征=5，输出特征=3）
+linear = nn.Linear(in_features=5, out_features=3)
+# 输入为浮点型张量（形状：[batch_size, input_features]）
+input_tensor = torch.FloatTensor([[1.0, 2.0, 3.0, 4.0, 5.0], 
+                                  [6.0, 7.0, 8.0, 9.0, 10.0]])
+output = linear(input_tensor)
+print(output.shape)  # 输出形状：torch.Size([2, 3])
+
+```
+# TODO 13. Transformer/CNN/RNN的时间复杂度对比
+
+![alt text](image-2.png)
 - https://zhuanlan.zhihu.com/p/264749298
 
 
 
-# 14.
+# TODO 14.
 
 - https://zhuanlan.zhihu.com/p/70703846
 
@@ -194,7 +302,7 @@ def channel_shuffle(x, groups):
 # 15. 比较CNN和多层感知机MLP
 
 - MLP由全连接层构成，每个神经元都和上一层中的所有节点连接，存在参数冗余；相比之下，CNN由于权重共享，参数更少，方便网络的训练与设计深层网络；
-- MLP只接受向量输入，会丢失像素间的空间信息；CNN接受矩阵和向量输入，能利用像素间的空间关系
+- MLP只接受向量输入，会丢失像素间的空间信息；CNN保留输入的空间维度（如H×W×C）
 - MLP是CNN的一个特例，当CNN卷积核大小与输入大小相同时其计算过程等价于MLP
 
 # 16. MMCV中Hook机制简介及创建一个新的Hook
@@ -226,50 +334,62 @@ def register_checkpoint_hook(self, checkpoint_config):
 
 - 一种方式是通过损失处理，论文标题：Unsupervised Label Noise Modeling and Loss Correction，可以使用一个Beta分布来刻画正常样本和噪音样本，从而将二者区分。
 
+![alt text](image-3.png)
+图中展示的是训练了10轮之后的各个样本的cross-entropy loss，可以看出clean和noisy的loss分布呈现出一个双峰分布，可以使用混合概率模型来模拟，比如高斯混合模型（GMM），但实际上作者发现用贝塔混合模型（BMM）模拟更好。
+- EM算法优化迭代估计BMM参数（α、β），计算每个样本属于噪声或正常类别的概率。
+- ​动态阈值调整：根据当前训练阶段的分布参数，动态设定分类阈值。例如，当噪声概率>0.7时标记为错误样本。
+- 改进loss，考虑样本为正常的概率：还是在原来的使用CE-loss的训练模式下，每个epoch训练完之后，去使用EM算法把当前这个混合贝塔分布BMM给模拟出来，然后计算新的loss——D-loss，使用这个D-loss来更新参数。注意每一轮都是使用CE-loss来学习BMM，然后使用D-loss更新。
 
-# 18. PyTorch 节省显存的常用策略
 
-- 混合精度训练
-- 大 batch 训练或者称为梯度累加：具体实现是在 loss = loss / cumulative_iters
-- gradient checkpointing 梯度检查点
 
 # 19. 深度学习模型训练时的Warmup预热学习率作用
 
-Warmup是在ResNet论文中提到的一种学习率预热的方法，它在训练开始的时候先选择使用一个较小的学习率，训练了一些epoches或者steps(比如4个epoches,10000steps)，再修改为预先设置的学习来进行训练。
+Warmup是在ResNet论文中提到的一种学习率预热的方法，它在训练开始的时候先选择使用一个**较小的学习率**，训练了一些epoches或者steps(比如4个epoches,10000steps)，再修改为预先设置的学习来进行训练。
 
 由于刚开始训练时，模型的权重(weights)是随机初始化的，此时若选择一个较大的学习率，可能带来模型的不稳定(振荡)，选择Warmup预热学习率的方式，可以使得开始训练的几个epoches或者一些steps内学习率较小，在预热的小学习率下，模型可以慢慢趋于稳定，等模型相对稳定后再选择预先设置的学习率进行训练，使得模型收敛速度变得更快，模型效果更佳。
 
 
 # 21. PyTorch中的 ModuleList 和 Sequential的区别和使用场景
 
+ModuleList 就是一个储存各种模块的 list，这些模块之间没有联系，list的顺序没有含义，没有实现 forward 功能；自定义更加灵活。
+Sequential 内的模块需要按照顺序排列，要保证相邻层的输入输出大小相匹配，内部 forward 功能已经实现；代码更加整洁。
+
 [ModuleList](https://zhuanlan.zhihu.com/p/64990232)
 
 # 22. 考虑一个过滤器[-1 -1 -1; 0 0 0; 1 1 1] 用于卷积。该滤波器将从输入图像中提取哪些边缘？
 
-该过滤器将从图像中提取水平边缘。为了获得更具体的理解，请考虑由具有以下像素强度的数组表示的灰度图像： 
+该过滤器将从图像中提取**水平**边缘。为了获得更具体的理解，请考虑由具有以下像素强度的数组表示的灰度图像： 
 
-```
+```python
 [0 0 0 0 0 0; 
  0 0 0 0 0 0; 
  0 0 0 0 0 0; 
  10 10 10 10 10 10；
  10 10 10 10 10 10；]
-```
 
+#两者的卷积将得到数组 
+[0 0 0 0; 
+30 30 30 30；
+30 30 30 30；
+0 0 0 0;]
+```
 从阵列中可以明显看出，图像的上半部分是黑色的，而下半部分是较浅的颜色，在图像中心形成明显的边缘。
-两者的卷积将得到数组 [0 0 0 0; 30 30 30 30；30 30 30 30；0 0 0 0;]。从结果数组中的值可以看出，水平边缘已被识别。
+从结果数组中的值可以看出，水平边缘已被识别。
 
 # 23. 深度学习中为什么不对 bias 偏置进行正则化？
 
+权重主导模型容量。​偏置的调节作用有限，偏置的作用是对激活函数输出进行平移调整，其数值大小对模型非线性的影响较小。
+
+-----
 因为它对输入参数不敏感 公式上看就是它对所有的输入一视同仁，不贡献模型的曲率，求导的时候 bias 没多大作用
 
-# 25. 深度学习模型中如何融入传统图像处理的特征？直接拼接融合有什么问题？
+# TODO 25. 深度学习模型中如何融入传统图像处理的特征？直接拼接融合有什么问题？
 
 特征融合的一大难点在于不同的特征来自不同domain，直接物理拼接可能没有意义。比如常见的前融合或者后融合，以后融合举例，在卷积层铺平后的向量与传统视觉特征向量拼接，然后再接到全连接网络，可能效果不理想。
 
 一种思路是采用discrimination correlation analysis方法进行融合，具体的：利用训练好的网络，从训练图像中提取特征向量;同时利用sift或者其他特征提取方式从训练图像中提取特征向量。然后对两组向量做dca分析，采用向量拼接的方式连接两组向量，训练分类器。
 
-# 26. 多任务学习中各个任务损失的权重应该如何设计呢？
+# TODO 26. 多任务学习中各个任务损失的权重应该如何设计呢？
 
 [多任务学习损失](https://www.zhihu.com/question/359962155)
 [多任务学习学习率](https://zhuanlan.zhihu.com/p/56613537)
@@ -284,13 +404,19 @@ Adam拥有收敛速度快、调参容易的优点，却也存在时常被人攻�
 
 # 21. 优化问题：神经网络权重为什么不能初始化为0，而逻辑回归参数可以初始化为0？
 
-[梯度下降算法无法工作](https://zhuanlan.zhihu.com/p/75879624)
+逻辑回归本质是单层、无隐藏层、线性+激活，通过Sigmoid函数将线性输出z=w^t *x+b映射为概率P(Y=1∣X)仅含输入层与输出层，参数数量少（与特征数一致）。
+1. 无对称性问题
+2. 是凸函数，保证收敛
+3. bias保证反向传播梯度≠0
+
+神经网络是多层、隐藏层、非线性组合，需通过随机初始化（如Xavier或He初始化）打破对称性
+1. 非凸损失函数
 
 #  28. 如何处理不平衡的数据集？
 
 有多种方法可以处理不平衡的数据集，例如使用不同的算法、对类别进行加权或对少数类别进行过采样。
 
-算法选择：某些算法比其他算法更适合处理不平衡数据。例如，决策树和随机森林往往在不平衡数据上表现良好，而逻辑回归或支持向量机等算法可能会很困难。
+算法选择：某些算法比其他算法更适合处理不平衡数据。例如，**决策树和随机森林**往往在不平衡数据上表现良好，而逻辑回归或支持向量机等算法可能会很困难。
 
 类权重：通过为少数类分配更高的权重，可以使算法在训练过程中更加重视它。这有助于防止算法总是预测多数类。
 
@@ -298,25 +424,52 @@ Adam拥有收敛速度快、调参容易的优点，却也存在时常被人攻�
 
 # 29. Pytorch代码中如何尽量避免.to(device)的操作？
 
-- 其中一种情况是初始化一个全0或全1的张量，比如模型的输出已经在cuda上了，你需要另外的tensor也是在cuda上，这时，你可以使用*_like操作符.
+在 PyTorch 中频繁使用 .to(device) 不仅会增加代码冗余，还可能因设备不匹配导致错误（如 `Expected object of device type cuda but got cpu`）
+
+```python
+# 1.假设 model_output 在 GPU 上
+loss_weights = torch.ones_like(model_output)  # 自动创建 GPU 上的张量。或者zeros_like()
+
+# 2.统一管理设备变量
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 统一设备变量
+input_tensor = torch.randn(2, 3, device=device) # 创建新张量时直接指定设备
+
+#3. 其他
+```
 
 # 30. Pytorch中nn.Identity()/torch.chunk/torch.masked_select/torch.gather操作的应用场景？
 
 ```python
 # 1:1的映射替换一些层
-model = resnet50(pretrained=True)
-model.fc = nn.Identity()
+model = resnet50(pretrained=True) #其全连接层（fc）默认输出维度为1000（对应ImageNet的1000分类任务）
+model.fc = nn.Identity() #该操作直接移除原全连接层，使模型输出变为最后一个卷积层的特征图（形状为[batch_size, 2048]）
 
 # 将输出分成N块
 o1, o2, o3 = torch.chunk(one_layer(batch), 3, dim=1)
 
 # 计算损失只在满足某些条件的张量上
 data = torch.rand((3, 3)).requires_grad_()
-mask = data > data.mean()
+mask = data > data.mean() #通过逐元素比较生成布尔矩阵
 torch.masked_select(data, mask)
 tensor([[0.0582, 0.7170, 0.7713],
         [0.9458, 0.2597, 0.6711],
         [0.2828, 0.2232, 0.1981]], requires_grad=True)
+
+# torch.gather 的核心价值在于其动态索引能力，适用于需要根据运行时条件（如真实标签、注意力权重）从张量中提取元素
+# 举例：计算每个样本的真实类别预测概率
+import torch
+# 模拟模型输出：batch_size=3，num_classes=5
+pred_probs = torch.randn(3, 5).softmax(dim=1)  # shape: [3,5]
+true_labels = torch.tensor([2, 0, 4])          # shape: [3]
+
+# 使用 torch.gather 提取真实标签对应的概率
+selected_probs = torch.gather(
+    input=pred_probs,
+    dim=1,
+    index=true_labels.unsqueeze(1)  # 扩展维度至 [3,1]，与 input 维度对齐
+).squeeze(1)                        # 结果恢复为 [3]
+
+print(selected_probs)
 ```
 
 # 31. 如何将大模型有效地切割成若干个子模型？如何将切割后的子模型分配到多个节点上进行并行训练？
@@ -334,7 +487,7 @@ https://zhuanlan.zhihu.com/p/222772996
 
 当 Batch Size 增大时，每个 Batch 的梯度将会更准，所以步子就可以迈大一点，也就是增大学习率，以求更快达到终点，缩短训练时间，问题就是，增大多少才是最合适的呢？
 
-推导原理是让 SGD 增量的方差保持不变。即 Batch Size 扩大到 N 倍，则学习率扩大到 根号N 倍
+推导原理是让 SGD 增量的方差保持不变。即 Batch Size 扩大到 N 倍，则学习率扩大到 **根号N** 倍
 
 
 # 05. Pytorch Lighting的设计哲学，及你觉得好用的点
@@ -350,21 +503,7 @@ Pytorch-lightning 的核心设计哲学是将 深度学习项目中的 研究代
 
 以2机8卡为例：分布式训练输出rank/local_rank/world_size。rank序号为0-15，world_size为16，local_rank为0-7。
 
-# 14. PyTorch 中 Dataset 是用于表示数据集的基本类。获取一个batch数据的步骤？
 
-1，首先我们要确定数据集的长度n。
-
-结果类似：n = 1000。
-
-2，然后我们从0到n-1的范围中抽样出m个数(batch大小)。
-
-假定m=4, 拿到的结果是一个列表，类似：indices = [1,4,8,9]
-
-3，接着我们从数据集中去取这m个数对应下标的元素。
-
-拿到的结果是一个元组列表，类似：samples = [(X[1],Y[1]),(X[4],Y[4]),(X[8],Y[8]),(X[9],Y[9])]
-
-4，最后我们将结果整理成两个张量作为输出。
 
 # 15. 训练问题：Pytorch训练的过程中内存一直增加的问题，如何解决？
 

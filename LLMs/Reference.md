@@ -1,5 +1,33 @@
 # 01. 大模型常用微调方法LORA和Ptuning的原理
+![lora](image.png)
+W = W0 + ΔW = W0 + BA，其中W0（d*k）、A（d*r）和B（r*k），r << d、k。
+A/B相当于一个Encoder一个Decoder。A初始化成高斯分布，B初始化=0
+秩“r”是一个超参数（该论文建议使用1、2、4、8或64，其中4或8在大多数情况下效果最好）
 
+```python
+input_dim = 768 # e.g., the hidden size of the pre-trained model
+output_dim = 768 # e.g., the output size of the layer
+rank = 8 # The rank 'r' for the low-rank adaptation
+
+W = ... # from pretrained network with shape input_dim x output_dim
+
+W_A = nn.Parameter(torch.empty(input_dim, rank)) # LoRA weight A
+W_B = nn.Parameter(torch.empty(rank, output_dim)) # LoRA weight B
+
+# Initialization of LoRA weights
+nn.init.kaiming_uniform_(W_A, a=math.sqrt(5))
+nn.init.zeros_(W_B)
+
+def regular_forward_matmul(x, W):
+    h = x @ W
+return h
+
+def lora_forward_matmul(x, W, W_A, W_B):
+    h = x @ W  # regular matrix multiplication
+    h += x @ (W_A @ W_B)*alpha # use scaled LoRA weights
+return h
+```
+------
 Lora方法的核心是在大型语言模型上对指定参数增加额外的低秩矩阵，也就是在原始PLM旁边增加一个旁路，做一个降维再升维的操作。并在模型训练过程中，固定PLM的参数，只训练降维矩阵A与升维矩阵B。
 
 Ptuning方法的核心是使用可微的virtual token替换了原来的discrete tokens，且仅加入到输入层，并使用prompt encoder（BiLSTM+MLP）对virtual token进行编码学习。
@@ -7,27 +35,13 @@ Ptuning方法的核心是使用可微的virtual token替换了原来的discrete 
 更详细请查阅[使用 LoRA（低阶适应）微调 LLM](https://zhuanlan.zhihu.com/p/672999750)
 
 
-# 02. 介绍一下stable diffusion的原理
+# 18. 大模型微调的LORA原理及Lora怎么训练？
 
-Stable Diffusion 总共包含三个主要的组件，其中每个组件都拥有一个独立的神经网络：
+[大模型实战：使用 LoRA（低阶适应）微调 LLM](https://zhuanlan.zhihu.com/p/672999750)
 
-![Alt](assert/sd1.jpg#pic_center)
+# 19. lora的矩阵怎么初始化？为什么要初始化为全0？
 
-1）Clip Text 用于文本编码。
-输入：文本
-输出：77 个 token 嵌入向量，其中每个向量包含 768 个维度
-
-2）UNet + Scheduler 在信息（潜）空间中逐步处理 / 扩散信息。
-输入：文本嵌入和一个由噪声组成的初始多维数组（结构化的数字列表，也叫张量 tensor）。
-输出：一个经过处理的信息阵列
-
-3）自编码解码器（Autoencoder Decoder），使用处理过的信息矩阵绘制最终图像的解码器。
-输入：处理过的信息矩阵，维度为（4, 64, 64）
-输出：结果图像，各维度为（3，512，512）
-
-更详细请查阅[從頭開始學習Stable Diffusion](https://chrislee0728.medium.com/%E5%BE%9E%E9%A0%AD%E9%96%8B%E5%A7%8B%E5%AD%B8%E7%BF%92stable-diffusion-%E4%B8%80%E5%80%8B%E5%88%9D%E5%AD%B8%E8%80%85%E6%8C%87%E5%8D%97-ec34d7726a6c)
-
-更详细请查阅[十分钟理解Stable Diffusion](https://www.ithome.com/0/668/981.htm)
+[大模型实战：使用 LoRA（低阶适应）微调 LLM](https://zhuanlan.zhihu.com/p/672999750)
 
 
 # 03. 为何现在的大模型大部分是Decoder only结构
@@ -54,7 +68,7 @@ Stable Diffusion 总共包含三个主要的组件，其中每个组件都拥有
 更详细请查阅[大模型常见面试题解](https://blog.csdn.net/weixin_36378508/article/details/133809694
 )
 
-# 05. 为什么transformer块使用LayerNorm而不是BatchNorm
+# 05. 为什么transformer块使用LayerNorm而不是BatchNorm #TODO add link
 
 Batch Normalization 是对这批样本的同一维度特征做归一化， Layer Normalization 是对这单个样本的所有维度特征做归一化。LN不依赖于batch的大小和输入sequence的长度，因此可以用于batchsize为1和RNN中sequence的normalize操作。
 
@@ -74,48 +88,32 @@ Batch Normalization 是对这批样本的同一维度特征做归一化， Layer
 
 # 07. 监督微调SFT后LLM表现下降的原因
 
-SFT（Supervised Fine-Tuning）是一种常见的微调技术，它通过在特定任务的标注数据上进行训练来改进模型的性能。然而，SFT可能会导致模型的泛化能力下降，这是因为模型可能过度适应于微调数据，而忽视了预训练阶段学到的知识。这种现象被称为灾难性遗忘，可以使用一些策略，如：
+SFT（Supervised Fine-Tuning）是一种常见的微调技术，它通过在特定任务的标注数据上进行训练来改进模型的性能。然而，SFT可能会导致模型的泛化能力下降，这是因为模型可能过度适应于微调数据，而忽视了预训练阶段学到的知识。这种现象被称为**灾难性遗忘**，可以使用一些策略，如：
 
 - 使用更小的学习率进行微调，以减少模型对预训练知识的遗忘。
 - 使用正则化技术，如权重衰减或者早停，以防止模型过度适应微调数据。
 - 使用Elastic Weight Consolidation（EWC）等技术，这些技术试图在微调过程中保留模型在预训练阶段学到的重要知识。
 
-# 08. 微调阶段样本量规模增大导致的OOM错误
 
-全参数微调的显存需求取决于多个因素，包括模型的大小（参数数量），批次大小，序列长度，以及是否使用了混合精度训练等。对于GPT-3这样的大模型，如果想要在单个GPU上进行全参数微调，可能需要数十GB甚至上百GB的显存。
-
-当样本量规模增大时，可能会出现OOM（Out of Memory）错误，这是因为模型需要更多的内存来存储和处理数据。为了解决这个问题，可以尝试以下方法：
-
-- 减小批量大小：这可以减少每次训练需要处理的数据量，从而减少内存使用。
-- 使用梯度累积：这种方法可以在不减小批量大小的情况下，减少内存使用。
-- 使用模型并行：这种方法可以将模型的不同部分放在不同的设备上进行训练，从而减少每个设备需要的内存。
 
 # 09. 连接文本和图像的CLIP架构简介
+
+CLIP 本质上就是拿图片特征和文本特征做余弦相似度对比。构建⼤规模的图像-⽂本数据构建（⽂本，图像）pair对，在其他下游⼦任务中取得极⾼的zero-shot指标。
+优点：泛化性能强，特征在同⼀空间下衡量，模型简单不需要额外训练。
+缺陷：⽂本描述简单“A photo of a xxx”，图⽂理解能⼒偏弱
+
+-----
+
 
 CLIP 把自然语言级别的抽象概念带到计算机视觉里了。确定一系列query，然后通过搜索引擎搜集图像，最后通过50万条query，搜索得到4亿个图像文本对。然后将Text Decoder从文本中提取的语义特征和Image Decoder从图像中提取的语义特征进行匹配训练。
 
 [如何评价OpenAI最新的工作CLIP](https://www.zhihu.com/question/438649654)
 
-# 09. Attention计算复杂度以及如何改进
 
-- 代码中的to_qkv()函数，即用于生成q、k、v三个特征向量
-
-![Alt](assert/attention.png#pic_center=600x400)
-
-```python
-self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
-self.to_out = nn.Linear(inner_dim, dim)
-```
-
-- 在标准的Transformer中，Attention计算的时间复杂度为O(N^2)，其中N是输入序列的长度。为了降低计算复杂度，可以采用以下几种方法：
-  - 使用自注意力机制，减少计算复杂度。自注意力机制不需要计算输入序列之间的交叉关系，而是计算每个输入向量与自身之间的关系，从而减少计算量。
-  - 使用局部注意力机制，只计算输入序列中与当前位置相关的子序列的交互，从而降低计算复杂度。
-  - 采用基于近似的方法，例如使用随机化和采样等方法来近似计算，从而降低计算复杂度。
-  - 使用压缩注意力机制，通过将输入向量映射到低维空间来减少计算量，例如使用哈希注意力机制和低秩注意力机制等。
 
 # 10. BERT用于分类任务的优点，后续改进工作有哪些？
 
-在分类任务中，BERT的结构中包含了双向的Transformer编码器，这使得BERT能够更好地捕捉文本中的双向上下文信息，从而在文本分类任务中表现更好。BERT的后续改进工作主要包括以下方面：
+在分类任务中，BERT的结构中包含了双向的Transformer编码器（双向自注意力机制实现上下文的全局建模），这使得BERT能够更好地捕捉文本中的双向上下文信息，从而在文本分类任务中表现更好。BERT的后续改进工作主要包括以下方面：
 
 - 基于BERT的预训练模型的改进，例如RoBERTa、ALBERT等；
 - 通过调整BERT的架构和超参数来进一步优化模型性能，例如Electra、DeBERTa等；
@@ -124,7 +122,14 @@ self.to_out = nn.Linear(inner_dim, dim)
 
 # 11. 介绍transformer算法
 
-Transformer本身是一个典型的encoder-decoder模型，Encoder端和Decoder端均有6个Block，Encoder端的Block包括两个模块，多头self-attention模块以及一个前馈神经网络模块；Decoder端的Block包括三个模块，多头self-attention模块，多头Encoder-Decoder attention交互模块，以及一个前馈神经网络模块；需要注意：Encoder端和Decoder端中的每个模块都有残差层和Layer Normalization层。
+Transformer本身是一个典型的encoder-decoder模型。
+Encoder端和Decoder端均有6个Block，Encoder端的Block包括两个模块，多头self-attention模块以及一个前馈神经网络模块。
+Decoder端的Block包括三个模块，多头self-attention模块，多头Encoder-Decoder attention交互模块，以及一个前馈神经网络模块。【】
+需要注意：Encoder端和Decoder端中的每个模块都有残差层和Layer Normalization层。
+还有位置编码。
+
+q来自decoder，k和v来自encoder，叫做cross attention；还有不同cross attention的方式：k/v不来自最后一层
+![attention](image-1.png)
 
 # 14. 在大型语言模型 (llms) 中减少幻觉的策略有哪些？
 
@@ -142,34 +147,16 @@ Transformer本身是一个典型的encoder-decoder模型，Encoder端和Decoder�
 
 - 监督微调或者指令微调。模型将用户消息作为输入，模型通过最小化其预测与提供的响应之间的差异来学习生成响应，此阶段标志着模型从仅仅理解语言模式到理解并响应指令的转变。
 
-- 采用人类反馈强化学习 (RHFL) 作为后续微调步骤。
+- 采用人类反馈强化学习 (RLHF) 作为后续微调步骤。
 
 # 16. 在大型语言模型 (llms) 上下文中的标记是什么？
 
 将输入文本分解为多个片段，每一部分大约是一个单词大小的序列，我们称之为子词标记，该过程称为标记化。标记可以是单词或只是字符块。
 
 
-# 18. 大模型微调的LORA原理及Lora怎么训练？
 
-[大模型实战：使用 LoRA（低阶适应）微调 LLM](https://zhuanlan.zhihu.com/p/672999750)
 
-# 19. lora的矩阵怎么初始化？为什么要初始化为全0？
 
-[大模型实战：使用 LoRA（低阶适应）微调 LLM](https://zhuanlan.zhihu.com/p/672999750)
-
-# 20. Stable Diffusion里是如何用文本来控制生成的？
-
-Stable Diffusion是一种潜在扩散模型，主要通过自动编码器（VAE），U-Net以及文本编码器三个核心组件完成用文本来控制生成的图像。Unet的Attention模块Latent Feature和Context Embedding作为输入，将两者进行Cross Attenetion操作，将图像信息和文本信息进行了融合，整体上是一个经典的Transformer流程。
-
-# 21. Stable Diffusion相比Diffusion主要解决的问题是什么？
-
-Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输入到U-Net，这使得当图片尺寸以及time step t足够大时，Diffusion会非常的慢。
-
-# 22. Diffusion每一轮训练样本选择一个随机时间步长？
-
-训练过程包含：每一个训练样本选择一个随机时间步长，将time step 对应的高斯噪声应用到图片中，将time step转化为对应embedding；
-
-模型在训练过程中 loss 会逐渐降低，越到后面 loss 的变化幅度越小。如果时间步长是递增的，那么必然会使得模型过多的关注较早的时间步长（因为早期 loss 大），而忽略了较晚的时间步长信息。
 
 # 24. 领域数据训练后，通用能力往往会有所下降，如何缓解模型遗忘通用能力?
 
@@ -177,11 +164,23 @@ Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输�
 
 # 25. 在大型语言模型 (llms)中数据模态的对齐如何处理？
 
-- Qformer
+-  Qformer
+BLIP2：将图像特征对齐到预训练语言模型
+BLIP-2 通过在冻结的预训练图像编码器和冻结的预训练大语言模型之间添加一个轻量级 查询 Transformer (Query Transformer, Q-Former) 来弥合视觉和语言模型之间的模态隔阂。在整个模型中，Q-Former 是唯一的可训练模块，而图像编码器和语言模型始终保持冻结状态。
+
+
+BLIP：通过多路损失函数，以及图像分快理解策略等算法，构建⾼质量的图像理解模型。
+BLIP2：在BLIP基础上，利用Q-Former构建图像与⼤语⾔模型之间的桥梁，充分利⽤⼤语⾔模型⾃身的预训练能⼒
+
+为什么BLIP/BLIP2的特征没法直接⽤？
+因为受到⽂图⼀致性等隐形损失约束，相关特征不再同⼀个特征空间下（⽆法直接⽤距离衡量⽂图特征的相似性），因此⽆法像CLIP⼀样“直接”接⼊模型中使⽤
+
+https://cloud.tencent.com/developer/article/2353722?from=15425
 
 # 26. 训练通用目标检测器常会使用多源图像进行训练，如何处理新类别歧视？
 
 - Detecting Everything in the Open World: Towards Universal Object Detection
+UniDetector
 
 # 27. 举例说明强化学习如何发挥作用？
 
@@ -215,7 +214,7 @@ Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输�
 # 30. Instruction Tuning与Prompt tuning方法的区别？
 
 - Prompt tuning:针对每个任务，单独生成prompt模板（hard prompt or soft prompt），然后在每个任务上进行full-shot微调与评估，其中预训练模型参数是freeze的。Prompt是去激发语言模型的补全能力，比如给出上半句生成下半句、或者做完形填空，都还是像在做language model任务。
-- Instruction Tuning：针对每个任务，单独生成instruction（hard token），通过在若干个full-shot任务上进行微调，然后在具体的任务上进行评估泛化能力（zero shot），其中预训练模型参数是unfreeze的。Instruction Tuning则是激发语言模型的理解能力，通过给出更明显的指令/指示，让模型去理解并做出正确的action。
+- Instruction Tuning：针对每个任务，单独生成instruction（hard token），通过在若干个full-shot任务上进行微调，然后在具体的任务上进行评估泛化能力（zero shot），其中预训练模型参数是**unfreeze**的。Instruction Tuning则是激发语言模型的理解能力，通过给出更明显的指令/指示，让模型去理解并做出正确的action。
 
 [Instruction Tuning](https://zhuanlan.zhihu.com/p/558286175)
 
@@ -226,14 +225,7 @@ Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输�
 - 将蒸馏方法与其他技术结合使用，例如使用多任务学习和迁移学习来进一步改进知识蒸馏的效果。
 
 
-# 32. Transformer中的Attention计算复杂度以及如何改进？
 
-在标准的Transformer中，attention计算的时间复杂度为O(N^2)，其中N是输入序列的长度。为了降低计算复杂度，可以采用以下几种方法：
-
-- 使用自注意力机制，减少计算复杂度。自注意力机制不需要计算输入序列之间的交叉关系，而是计算每个输入向量与自身之间的关系，从而减少计算量。
-- 使用局部注意力机制，只计算输入序列中与当前位置相关的子序列的交互，从而降低计算复杂度。
-- 采用基于近似的方法，例如使用随机化和采样等方法来近似计算，从而降低计算复杂度。
-- 使用压缩注意力机制，通过将输入向量映射到低维空间来减少计算量，例如使用哈希注意力机制和低秩注意力机制等。
 
 
 # 33. 进行SFT操作的时候，基座模型选用Chat还是Base?
@@ -260,7 +252,7 @@ Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输�
 
 # 38. 如何解决chatglm微调的灾难性遗忘问题？
 
-https://zhuanlan.zhihu.com/p/628438318
+https://zhuanlan.zhihu.com/p/628438318 没解答
 
 # 40. GPT3、LLAMA的Layer Normalization 的区别是什么？
 
@@ -268,9 +260,7 @@ https://zhuanlan.zhihu.com/p/628438318
 
 - LLAMA：采用了Pre-Layer Normalization（前标准化）的结构，即先进行Layer Normalization，然后进行自注意力或前馈神经网络的计算。这种结构有助于提高模型的泛化能力和鲁棒性。
 
-# 41. MHA多头注意力和MQA多查询注意力的区别？
 
-- 与MHA不同的是，MQA 让所有的头之间共享同一份 Key 和 Value 矩阵，每个头只单独保留了一份 Query 参数，从而大大减少 Key 和 Value 矩阵的参数量。
 
 # 42. 推理优化技术 Flash Attention 的作用是什么？
 
@@ -278,9 +268,11 @@ Flash Attention 是一种高效的注意力机制实现，如共享张量核心�
 
 # 43. ZeRO，零冗余优化器的三个阶段？
 
-- 将优化器状态分割到不同设备上，减少内存占用；除了优化器状态，还将模型参数分割到不同设备上；将梯度和优化器状态也分割到不同设备上，实现最大的内存节省。
+ZeRO-1：优化器状态分区
+ZeRO-2：优化器状态+梯度分区
+ZeRO-3（也称为FSDP）：优化器状态+梯度+参数分区
 
-# 44. 模型架构：对于Qwen-VL模型的输入，图像是如何处理的？它们经过视觉编码器和适配器后得到了怎样的特征序列？
+# 44. 模型架构：对于Qwen-VL模型的输入，图像是如何处理的？它们经过视觉编码器和适配器后得到了怎样的特征序列？ #TODO - 
 
 - https://www.zhihu.com/question/619091330/answer/3260054120
 
@@ -293,11 +285,9 @@ Flash Attention 是一种高效的注意力机制实现，如共享张量核心�
 - Agents：代理，决定模型采取哪些行动，执行并且观察流程，直到完成为止。
 - Chains：链，一系列对各种组件的调用。
 
-# 27. Stable Diffusion XL是一个二阶段的级联扩散模型，简述其工作流？
 
-https://zhuanlan.zhihu.com/p/643420260
 
-# 44. Mamba 对 RNN 做了哪些改变，从而在GPU上可以算的比较快？
+# 44. Mamba 对 RNN 做了哪些改变，从而在GPU上可以算的比较快？ #TODO - 
 
 https://www.zhihu.com/question/644981978
 
@@ -315,13 +305,69 @@ Grouped Query Attention (GQA)：
 - GQA既保留了多头注意力的一定表达能力，又通过减少内存访问压力来加速推理速度。
 - GQA可以通过对已经训练好的模型进行微调来实现，使用mean pooling来生成共享的KV，这种方法在保持推理速度的同时也能保持较高的模型质量
 
+![alt text](image-3.png)
+![alt text](image-4.png)
+![alt text](image-5.png)
+
+| 特性                | MHA（多头注意力）         | GQA（分组查询注意力）       | MQA（多查询注意力）          |
+|---------------------|--------------------------|----------------------------|-----------------------------|
+| 键值共享            | 不共享                   | 组内共享                   | 全局共享                    |
+| 内存占用            | 高（每个头独立存储KV）   | 中等                       | 低                          |
+| 表达能力            | 最强                     | 较强                       | 较弱                        |
+| 适用场景            | 高性能需求（如GPT-4）    | 平衡效率与性能（如Llama2） | 低资源场景（如边缘设备）    |
+
+MLA（Multi-Head Latent Attention），优化 KV 缓存的计算与存储效率。
+- ​低秩联合压缩：将高维键值矩阵投影到低维潜在空间（Latent Vector），减少存储需求（例如将 576 维的键值压缩为 64 维潜在向量）。
+- 解耦 RoPE（旋转位置编码）与注意力计算，避免额外计算开销
+![alt text](image-6.png)
+
+## 09. Attention计算复杂度以及如何改进
+
+- 代码中的to_qkv()函数，即用于生成q、k、v三个特征向量
+
+![Alt](assert/attention.png#pic_center=600x400)
+
+```python
+self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+self.to_out = nn.Linear(inner_dim, dim)
+```
+
+标准自注意力机制的时间复杂度 ​O(n²d)，空间复杂度 ​O(n²) ，​n：输入序列长度，​d：嵌入维度（特征维度）
+1. 稀疏化注意力：限制每个位置仅关注局部窗口或关键位置（如滑动窗口、随机采样）
+2. 分块计算（FlashAttention）​：将Q、K、V矩阵分块加载到GPU高速缓存（SRAM），减少HBM访问次数
+3. 近似注意力机制
+  (1) 核化线性注意力（Kernel-based Attention）​，用特征映射φ(Q)φ(K)^T替代QK^T，利用矩阵结合律重构计算顺序
+  (2) 低秩分解（Low-Rank Attention）​对QK^T矩阵进行奇异值分解（SVD），保留前k个主成分；
+1. Multi-Query Attention (MQA)：所有注意力头共享同一组K、V矩阵，减少KV缓存
+2. Grouped-Query Attention (GQA)：将头分组，每组共享KV矩阵，平衡MQA的效率与MHA的表达能力
+
+| 方法              | 复杂度     | 优点                  | 局限性               | 适用场景              |
+|-----------------------|----------------|---------------------------|--------------------------|--------------------------|
+| 稀疏注意力            | O(n logn)      | 显存占用低                | 牺牲长程依赖捕捉能力     | 局部相关性强的任务（如CV）|
+| 核化线性注意力 | O(nd²)         | 严格线性复杂度            | 需设计有效核函数         | 长序列生成（文本/视频）   |
+| MQA/GQA           | O(n²d/h)       | 推理速度快                | 表达能力受限             | 资源受限的端侧部署        |
+| FlashAttention| O(n²d)（实际加速）| 无需修改模型结构          | 需定制CUDA内核           | 训练加速与显存优化        |
+
+## 32. Transformer中的Attention计算复杂度以及如何改进？
+
+在标准的Transformer中，attention计算的时间复杂度为O(N^2)，其中N是输入序列的长度。为了降低计算复杂度，可以采用以下几种方法：
+
+- 使用自注意力机制，减少计算复杂度。自注意力机制不需要计算输入序列之间的交叉关系，而是计算每个输入向量与自身之间的关系，从而减少计算量。
+- 使用局部注意力机制，只计算输入序列中与当前位置相关的子序列的交互，从而降低计算复杂度。
+- 采用基于近似的方法，例如使用随机化和采样等方法来近似计算，从而降低计算复杂度。
+- 使用压缩注意力机制，通过将输入向量映射到低维空间来减少计算量，例如使用哈希注意力机制和低秩注意力机制等。
+
+## 41. MHA多头注意力和MQA多查询注意力的区别？
+
+- 与MHA不同的是，MQA 让所有的头之间共享同一份 Key 和 Value 矩阵，每个头只单独保留了一份 Query 参数，从而大大减少 Key 和 Value 矩阵的参数量。
 # 47. 100B以上的大模型预训练中出现loss spike的原因及解决方法？
 
 - 参考论文 < A Theory on Adam Instability in Large-Scale Machine Learning >
 - 知乎解读 https://zhuanlan.zhihu.com/p/675421518
 
-# 37. 模型问题：多模态大模型常采用MLP作为视觉映射器，将视觉特征到token一对一地映射到文本空间, 如何压缩视觉token量以提升效率？
+# 37. 模型问题：多模态大模型常采用MLP作为视觉映射器，将视觉特征到token一对一地映射到文本空间, 如何压缩视觉token量以提升效率？ #TODO - 
 
+TokenPacker
 - 知乎解读 https://zhuanlan.zhihu.com/p/707021763
 
 # 47. 数据准备：在处理对话及语料数据时，针对数据去重用了哪些算法，针对语料训练阶段的数据增强做了哪些？
@@ -334,14 +380,14 @@ Grouped Query Attention (GQA)：
 
 # 38. 模型问题：VLM模型中高分辨率图像降低token数的几种方式？
 
-- https://zhuanlan.zhihu.com/p/720428373
+- https://zhuanlan.zhihu.com/p/720428373 #TODO - 
 
 # 49. 模型推理：现有技术范式下，广义幻觉？
 
 现有技术范式下，广义幻觉只能靠外挂 RAG、function_call 的方式来解决；
 狭义幻觉的缓解方式其实还是调参数；
 
-# 52. 模型推理：LLM推理时Decode阶段一次迭代一个token，内存耗时更多，有什么对应的加速方法？
+# 52. 模型推理：LLM推理时Decode阶段一次迭代一个token，内存耗时更多，有什么对应的加速方法？ #TODO - 
 
 - https://zhuanlan.zhihu.com/p/699776257
 
@@ -352,6 +398,15 @@ Grouped Query Attention (GQA)：
 
 # 55. 模型训练：大模型训练阶段的耗时在哪里？比如涉及到千卡的训练。
 
+pytorch步骤，4-7最耗时
+1. dataset读取数据，构建输出
+2. dataloader collate数据，进行数据预处理
+3. 模型forward计算输出
+4. loss compute
+5. 模型backward计算梯度
+6. 模型sync梯度
+7. 优化器step更新权重
+8. 打印log
 - https://www.zhihu.com/question/650979052/answer/3501160453
 
 # 56. 模型优化：在SFT过程中Prompt优化是重要的一步，比如在商品分类的任务中，原提示词可能只包含了类别信息？

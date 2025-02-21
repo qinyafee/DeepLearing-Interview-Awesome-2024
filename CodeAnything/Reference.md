@@ -1,14 +1,18 @@
 # 01. Pytorch实现注意力机制、多头注意力与自注意力
 
 ```python
-class ScaledDotProductAttention(nn.Module):
+import torch
+import torch.nn as nn
+import numpy as np
+
+class ScaledDotProductAttention(nn.Module): #单头注意力
     """ Scaled Dot-Product Attention """
 
     def __init__(self, scale):
         super().__init__()
 
         self.scale = scale
-        self.softmax = nn.Softmax(dim=2)
+        self.softmax = nn.Softmax(dim=2)# 关键：在第三个维度归一化
 
     def forward(self, q, k, v, mask=None):
         u = torch.bmm(q, k.transpose(1, 2)) # 1.Matmul
@@ -25,7 +29,7 @@ class ScaledDotProductAttention(nn.Module):
 if __name__ == "__main__":
     n_q, n_k, n_v = 2, 4, 4
     d_q, d_k, d_v = 128, 128, 64
-
+    batch = 3
     q = torch.randn(batch, n_q, d_q)
     k = torch.randn(batch, n_k, d_k)
     v = torch.randn(batch, n_v, d_v)
@@ -34,17 +38,112 @@ if __name__ == "__main__":
     attention = ScaledDotProductAttention(scale=np.power(d_k, 0.5))
     attn, output = attention(q, k, v, mask=mask)
 
-    print(attn)
-    print(output)
+    print(attn.shape)
+    print(output.shape)
 
+class MultiHeadAttention(nn.Module):
+    """ Multi-Head Attention """
+
+    def __init__(self, n_head, d_k_, d_v_, d_k, d_v, d_o):
+        super().__init__()
+
+        self.n_head = n_head
+        self.d_k = d_k
+        self.d_v = d_v
+        # 定义查询、键、值的投影层
+        self.fc_q = nn.Linear(d_k_, n_head * d_k)
+        self.fc_k = nn.Linear(d_k_, n_head * d_k)
+        self.fc_v = nn.Linear(d_v_, n_head * d_v)
+
+        self.attention = ScaledDotProductAttention(scale=np.power(d_k, 0.5))
+
+        self.fc_o = nn.Linear(n_head * d_v, d_o)
+
+    def forward(self, q, k, v, mask=None):
+
+        n_head, d_q, d_k, d_v = self.n_head, self.d_k, self.d_k, self.d_v
+
+        batch, n_q, d_q_ = q.size()
+        batch, n_k, d_k_ = k.size()
+        batch, n_v, d_v_ = v.size()
+        # 投影操作
+        q = self.fc_q(q) # 1.单头变多头
+        k = self.fc_k(k)
+        v = self.fc_v(v)
+        #(batch, n_q, n_head*d_q) -> (batch, n_q, n_head, d_q) -> (n_head, batch, n_q, d_q) -> (n_head*batch, n_q, d_q)
+        q = q.view(batch, n_q, n_head, d_q).permute(2, 0, 1, 3).contiguous().view(-1, n_q, d_q) #permute 可能使张量内存不连续，contiguous() 会复制数据以保证连续性,避免后续 view 操作报错。
+        k = k.view(batch, n_k, n_head, d_k).permute(2, 0, 1, 3).contiguous().view(-1, n_k, d_k)
+        v = v.view(batch, n_v, n_head, d_v).permute(2, 0, 1, 3).contiguous().view(-1, n_v, d_v)
+
+        if mask is not None:
+            mask = mask.repeat(n_head, 1, 1)
+        attn, output = self.attention(q, k, v, mask=mask) # 2.当成单头注意力求输出
+
+        output = output.view(n_head, batch, n_q, d_v).permute(1, 2, 0, 3).contiguous().view(batch, n_q, -1) # 3.Concat
+        output = self.fc_o(output) # 4.仿射变换得到最终输出
+
+        return attn, output
+if __name__ == "__main__":
+    n_q, n_k, n_v = 2, 4, 4
+    d_q_, d_k_, d_v_ = 128, 128, 64
+
+    q = torch.randn(batch, n_q, d_q_)
+    k = torch.randn(batch, n_k, d_k_)
+    v = torch.randn(batch, n_v, d_v_)    
+    mask = torch.zeros(batch, n_q, n_k).bool()
+
+    mha = MultiHeadAttention(n_head=8, d_k_=128, d_v_=64, d_k=256, d_v=128, d_o=128)
+    attn, output = mha(q, k, v, mask=mask)
+
+    print(attn.size())
+    print(output.size())
+
+class SelfAttention(nn.Module):
+    """ Self-Attention """
+
+    def __init__(self, n_head, d_k, d_v, d_x, d_o):
+        self.wq = nn.Parameter(torch.Tensor(d_x, d_k))
+        self.wk = nn.Parameter(torch.Tensor(d_x, d_k))
+        self.wv = nn.Parameter(torch.Tensor(d_x, d_v))
+
+        self.mha = MultiHeadAttention(n_head=n_head, d_k_=d_k, d_v_=d_v, d_k=d_k, d_v=d_v, d_o=d_o)
+
+        self.init_parameters()
+
+    def init_parameters(self):
+        for param in self.parameters():
+            stdv = 1. / np.power(param.size(-1), 0.5)
+            param.data.uniform_(-stdv, stdv)
+
+    def forward(self, x, mask=None):
+        q = torch.matmul(x, self.wq)
+        k = torch.matmul(x, self.wk)
+        v = torch.matmul(x, self.wv)
+
+        attn, output = self.mha(q, k, v, mask=mask)
+
+        return attn, output
+if __name__ == "__main__":
+    n_x = 4
+    d_x = 80
+    batch = 3
+    x = torch.randn(batch, n_x, d_x)
+    mask = torch.zeros(batch, n_x, n_x).bool()
+
+    selfattn = SelfAttention(n_head=8, d_k=128, d_v=64, d_x=80, d_o=80)
+    attn, output = selfattn(x, mask=mask)
+
+    print(attn.size())
+    print(output.size())
 ```
+
 ```python
 from math import sqrt
 
 import torch
 import torch.nn as nn
 
-class MultiHeadSelfAttention(nn.Module):
+class MultiHeadSelfAttention(nn.Module): #废弃
     dim_in: int  # input dimension
     dim_k: int   # key and query dimension
     dim_v: int   # value dimension
@@ -168,7 +267,10 @@ cv::Mat convolution2D(cv::Mat& image, cv::Mat& kernel) {
 ```
 
 ```python
-def convolution2D(image, kernel):
+def convolution2D(image, kernel): #单通道图像, 无填充（Valid模式）、步长为1
+    if kernel_height > image_height or kernel_width > image_width:
+        raise ValueError("Kernel dimensions exceed image dimensions.")
+
     image_height, image_width = image.shape
     kernel_height, kernel_width = kernel.shape
     output = np.zeros((image_height - kernel_height + 1, image_width - kernel_width + 1))
@@ -194,31 +296,46 @@ def IoU(boxA,boxB):#x1,y1,x2,y2
     boxBArea=(boxB[2]-boxB[0]+1)*(boxB[3]-boxB[1]+1)
     iou=interArea/(boxAArea+boxBArea-interArea)
     return iou
+if __name__=='__main__':
+    boxA=(50,50,100,100)
+    boxB=(70,70,120,120)
+    print(IoU(boxA,boxB))
 #
+import numpy as np
+# bbox1 和 bbox2 是两个形状为 (N, 4) 和 (M, 4) 的数组，每行代表一个边界框 [x1, y1, x2, y2]
 def calculate_iou(bbox1, bbox2):
     # 计算bbox的面积
-    area1 = (bbox1[:, 2] - bbox1[:, 0]) * (bbox1[:, 3] - bbox1[:, 1])
-    area2 = (bbox2[:, 2] - bbox2[:, 0]) * (bbox2[:, 3] - bbox2[:, 1])
+    area1 = (bbox1[:, 2] - bbox1[:, 0]) * (bbox1[:, 3] - bbox1[:, 1]) #(N,)
+    area2 = (bbox2[:, 2] - bbox2[:, 0]) * (bbox2[:, 3] - bbox2[:, 1]) #(M,)
     # 换一种更高级的方式计算面积
     # area2 = np.prod(bbox2[:, 2:] - bbox2[:, :2], axis=1)
     
     # 计算交集的左上角坐标和右下角坐标
-    lt = np.maximum(bbox1[:, None, :2], bbox2[:, :2]) # [m, n, 2]
+    # ​广播机制：通过 None 扩展维度，使 bbox1 的形状变为 (N, 1, 4)，bbox2 保持 (M, 4)
+    # bbox2[:, :2]切片。第一个 : 表示选择所有行（即所有边界框）。
+    # 第二个 :2 表示选择每行的前两列（即 x1 和 y1）
+    lt = np.maximum(bbox1[:, None, :2], bbox2[:, :2]) # 最后lt=[N, M, 2]
     rb = np.minimum(bbox1[:, None, 2:], bbox2[:, 2:])
     
     # 计算交集面积
-    wh = np.clip(rb - lt, a_min=0, a_max=None)
-    inter = wh[:,:,0] * wh[:,:,1]
+    wh = np.clip(rb - lt, a_min=0, a_max=None) #(N，M，2)
+    inter = wh[:,:,0] * wh[:,:,1] #（(N，M）
     
-    # 计算并集面积
+    # 计算并集面积, area1[:, None] 形状为 (N, 1)，area2 形状为 (M,)，相加后形状为 (N, M)
     union = area1[:, None] + area2 - inter
     
     return inter / union
+
+if __name__ == '__main__':
+    bbox1 = np.array([[2, 2, 5, 5], [3, 3, 6, 6], [4, 4, 7, 7]])
+    bbox2 = np.array([[1, 1, 4, 4], [2, 2, 5, 5]])
+    print(calculate_iou(bbox1, bbox2))
 ```
 
 # 05. Numpy实现Focalloss
 
 ![Alt](assert/focal.jpg#pic_center)
+这个公式只使用二分类
 
 Focal loss其实就是相当于给不同的概率，不同的权重来调整loss，从而让模型更加注意区分错误样本和难区分的样本。
 
@@ -233,7 +350,7 @@ def multiclass_focal_log_loss(y_true, y_pred, class_weights = None, alpha = 0.5,
     pt = np.where(y_true == 1, y_pred, 1-y_pred)
     alpha_t = np.where(y_true == 1, alpha, 1-alpha)
     # FL = - alpha_t (1-pt)^gamma log(pt)
-    focal_loss = - alpha_t * (1 - pt) ** gamma * np.log(pt))
+    focal_loss = - alpha_t * (1 - pt) ** gamma * np.log(pt)
     if class_weights is None:
         focal_loss = np.mean(focal_loss)
     else:
@@ -247,8 +364,10 @@ y_pred = np.array([0.9, 0.1, 0.8, 0.2])
 loss = multiclass_focal_log_loss(y_true, y_pred)
 print(loss)
 ```
-# 06. Python实现nms、softnms
 
+# 06. Python实现nms、softnms
+![alt text](image-3.png)
+![alt text](image-4.png)
 ```python
 def nms(bboxes, scores, iou_thresh):
     """
@@ -257,10 +376,15 @@ def nms(bboxes, scores, iou_thresh):
     :param iou_thresh: IOU阈值
     :return:
     """
-    x1 = bboxes[:, 0]
-    y1 = bboxes[:, 1]
-    x2 = bboxes[:, 2]
-    y2 = bboxes[:, 3]
+    if len(bboxes) == 0:
+        return np.empty((0, 4)), np.empty((0,))
+
+    assert bboxes.shape[0] == scores.shape[0] #"bboxes和scores数量不一致"
+    assert bboxes.shape[1] == 4 #"bboxes格式应为(N, 4)"
+    x1 = bboxes[:, 0]  # 提取所有框的左上角x坐标
+    y1 = bboxes[:, 1]  # 提取所有框的左上角y坐标
+    x2 = bboxes[:, 2]  # 提取所有框的右下角x坐标
+    y2 = bboxes[:, 3]  # 提取所有框的右下角y坐标
     areas = (y2 - y1) * (x2 - x1)
 
     result = []
@@ -284,6 +408,14 @@ def nms(bboxes, scores, iou_thresh):
         index = index[idx + 1]  # 处理剩余的边框
     bboxes, scores = bboxes[result], scores[result]
     return bboxes, scores
+
+if __name__ == '__main__':
+    bboxes = np.array([[100, 100, 210, 210], [250, 250, 320, 330], [100, 100, 210, 210], [230, 240, 325, 330]])
+    scores = np.array([0.75, 0.8, 0.92, 0.78])
+    iou_thresh = 0.5
+    bboxes, scores = nms(bboxes, scores, iou_thresh)
+    print(bboxes)
+    print(scores)
 ```
 
 要实现 Soft-NMS（软性非极大值抑制），需要对原始的 NMS 算法进行一些修改。Soft-NMS 通过逐渐降低重叠边界框的置信度，而不是直接将它们排除，从而更平滑地抑制重叠边界框的影响。
@@ -333,7 +465,7 @@ def soft_nms(bboxes, scores, iou_thresh, sigma=0.5, score_thresh=0.001):
 
 # 07. Python实现BN批量归一化
 
-实现BN需要求的：均值、方差、参数beta、参数gamma。
+实现BN需要求的：均值、方差、参数(shift)beta、参数(scale)gamma。
 
 ![Alt](assert/bn.png#pic_center)
 
@@ -354,13 +486,18 @@ class MyBN:
         # 对应论文中需要更新的beta和gamma，采用pytorch文档中的初始化值
         self._beta = np.zeros(shape=(num_features, ))
         self._gamma = np.ones(shape=(num_features, ))
+        self.training = True  # 默认训练模式
 
     def batch_norm(self, x):
-        x_mean = x.mean(axis=0)
-        x_var = x.var(axis=0)
-        # 对应running_mean的更新公式
-        self._running_mean = (1-self._momentum)*x_mean + self._momentum*self._running_mean
-        self._running_var = (1-self._momentum)*x_var + self._momentum*self._running_var
+        if self.training:
+            x_mean = x.mean(axis=0)
+            x_var = x.var(axis=0)
+            # 对应running_mean的更新公式
+            self._running_mean = self._momentum * self._running_mean + (1 - self._momentum) * x_mean
+            self._running_var = self._momentum * self._running_var + (1 - self._momentum) * x_var
+        else:
+            x_mean = self._running_mean
+            x_var = self._running_var
         # 对应论文中计算BN的公式
         x_hat = (x-x_mean)/np.sqrt(x_var+self._eps)
         y = self._gamma*x_hat + self._beta
@@ -370,18 +507,16 @@ class MyBN:
 更详细请查阅[BN](https://zhuanlan.zhihu.com/p/100672008)
 
 # 10. PyTorch卷积与BatchNorm的融合
-
+![alt text](image-5.png)
 更详细请查阅[CONV-BN](https://zhuanlan.zhihu.com/p/49329030)
 
 
 # 11. 分割网络损失函数Dice Loss代码实现
-
+![alt text](image-2.png)
 ```python
-# 防止分母为0
-smooth = 100
- 
+from keras import backend as K 
 # 定义Dice系数
-def dice_coef(y_true, y_pred):
+def dice_coef(y_true, y_pred， smooth = 1e-5): #smooth防止分母为0
     y_truef = K.flatten(y_true)  # 将y_true拉为一维
     y_predf = K.flatten(y_pred)
     intersection = K.sum(y_truef * y_predf)
@@ -393,7 +528,7 @@ def dice_coef_loss(y_true, y_pred):
 ```
 
 # 08. Pytorch 针对L1损失的输入需要做数值的截断，构建CustomL1Loss类
-
+![alt text](image.png)
 ```python
 class CustomL1Loss(nn.Module):
     def __init__(self, low=-128, high=128):
@@ -402,8 +537,8 @@ class CustomL1Loss(nn.Module):
         self.l1_loss = nn.SmoothL1Loss()
 
     def forward(self, output, target):
-        output = torch.clip(output, min=self.low, max=self.high)
-        target = torch.clip(target, min=self.low, max=self.high)
+        output = torch.clip(output, min=self.low, max=self.high) #模型预测值
+        target = torch.clip(target, min=self.low, max=self.high) #真值
         return self.l1_loss(output, target)
 ```
 
@@ -421,7 +556,7 @@ def cosine_similarity(vector1, vector2):
 ```
 
 # 13. Numpy实现Sigmoid函数
-
+![alt text](image-1.png)
 ```python
 import numpy as np
 
@@ -429,7 +564,7 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 def softmax(x):
-    shift_x = x - np.max(x)
+    shift_x = x - np.max(x) # x=[1000, 1001, 1002] --> [-2 -1  0]，变成非正，避免了直接计算指数时可能出现的数值溢出问题
     exp_x = np.exp(shift_x)
     return exp_x / np.sum(exp_x)
 ```
@@ -516,7 +651,7 @@ def step_gradient(b_current, m_current, points, learningRate):
         y = points[i][1]
         b_gradient += -(2/N) * (y - ((m_current * x) + b_current))
         m_gradient += -(2/N) * x * (y - ((m_current * x) + b_current))
-    new_b = b_current - (learningRate * b_gradient)
+    new_b = b_current - (learningRate * b_gradient) #（截距b和斜率m）
     new_m = m_current - (learningRate * m_gradient)
     return [new_b, new_m]
 
@@ -539,9 +674,18 @@ def one_hot(x, num_class=None):
     ohx = np.zeros((len(x), num_class))
     ohx[range(len(x)), x] = 1
     return ohx
+
+if __name__ == "__main__":
+    x = [2, 0, 1]
+    print(one_hot(x))
+    # print(one_hot(x, 4))
+# 输出矩阵为：
+#  [0, 0, 1]]
+# [[1, 0, 0],
+#  [0, 1, 0],
 ```
 
-# 25. Pytorch 实现图像归一化的操作
+# 25. Pytorch 实现图像归一化的操作 #TODO - 
 
 ```python
 # 定义模型
@@ -619,15 +763,46 @@ dataset = CustomDataset(root_dir='path_to_your_dataset', transform=transform)
 from torch.utils.data import DataLoader
 
 data_loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+# 获取一个 batch 数据，维度错误，可能要调整
+for batch_features, batch_labels in data_loader:
+    print(f"Batch features shape: {batch_features.shape}")  # [3,256,256]
+    print(f"Batch labels shape: {batch_labels.shape}")      # []
+    break  # 仅取第一个 batch
 ```
+## 14. PyTorch 中 Dataset 是用于表示数据集的基本类。获取一个batch数据的步骤？
+
+1，首先我们要确定数据集的长度n。
+
+结果类似：n = 1000。
+
+2，然后我们从0到n-1的范围中抽样出m个数(batch大小)。
+
+假定m=4, 拿到的结果是一个列表，类似：indices = [1,4,8,9]
+
+3，接着我们从数据集中去取这m个数对应下标的元素。
+
+拿到的结果是一个元组列表，类似：samples = [(X[1],Y[1]),(X[4],Y[4]),(X[8],Y[8]),(X[9],Y[9])]
+
+4，最后我们将结果整理成两个张量作为输出。
 
 # 30. PyTorch 构建一个自定义层，该层实现一个简单的LReLU激活函数。
+ReLU（修正线性单元）的公式为：
+**f(x) = max(0, x)**​
+当输入值x大于0时，输出为x本身；当x小于或等于0时，输出为0。
+
+Leaky ReLU是ReLU的改进版本，其公式为：
+**f(x) = max(αx, x)**​
+其中，α是一个很小的常数（通常固定为0.01），用于在x小于0时允许一个小的梯度，避免神经元“死亡”问题。
+
+两者的核心区别在于Leaky ReLU对负值输入赋予非零梯度，而标准ReLU在负值区域直接截断为0。
 
 ```python
 class LReLU(nn.Module):
     def __init__(self, leak=0.01):
         super(LReLU, self).__init__()
-        self.leak = leak
+        # self.leak = leak
+        self.leak = nn.Parameter(torch.tensor(leak))# 注册为可学习参数
 
     def forward(self, x):
         return F.leaky_relu(x, negative_slope=self.leak)
@@ -638,10 +813,18 @@ model = nn.Sequential(
     LReLU(),
     nn.Linear(5, 2)
 )
+
+# 二，直接使用内置层
+model = nn.Sequential(
+    nn.Linear(10, 5),
+    nn.LeakyReLU(negative_slope=0.01),
+    nn.Linear(5, 2)
+
 ```
 
 # 32. PyTorch 实现图像到Patch Embedding过程，提示可用卷积实现？
 
+![alt text](image-6.png)
 ```python
 import torch
 import torch.nn as nn
@@ -655,20 +838,72 @@ class PatchEmbedding(nn.Module):
         self.in_channels = in_channels
         self.embed_dim = embed_dim
 
-        self.num_patches = (img_size // patch_size) ** 2
-
         self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
-        x = self.proj(x)  # (batch_size, embed_dim, num_patches, num_patches)
-        x = x.flatten(2, 3)  # (batch_size, embed_dim, num_patches ** 2)
-        x = x.transpose(1, 2)  # (batch_size, num_patches ** 2, embed_dim)
+        # num_patches = (img_size // patch_size) ** 2
+        x = self.proj(x)  # (batch_size, embed_dim, num_patches, num_patches) (bn,768,14,14)
+        x = x.flatten(2, 3)  # (batch_size, embed_dim, num_patches) (bn,768,14*14=196)
+        x = x.transpose(1, 2)  # (batch_size, num_patches, embed_dim) (bn,196,768)
         return x
 
+if __name__ == '__main__':
+    img = torch.randn(1, 3, 224, 224)
+    patch_embedding = PatchEmbedding()
+    out = patch_embedding(img)
+    print(out.shape)  # torch.Size([1, 196, 768])
+
+```
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class PositionEmbedding(nn.Module):
+    def __init__(self, embed_dim, max_position=1024):
+        super().__init__()
+        # 初始化位置编码矩阵，形状为 [max_position+1, embed_dim]
+        # +1 是为了兼容位置索引从0开始的情况（例如补丁位置从0到max_position）
+        self.position_embedding = nn.Parameter(
+            torch.zeros((max_position + 1, embed_dim))
+        )
+        # 使用正态分布初始化权重
+        nn.init.normal_(self.position_embedding, mean=0.0, std=math.sqrt(embed_dim / max_position))
+    
+    def forward(self, x):
+        # x形状: (batch_size, num_patches, embed_dim)
+        batch_size, num_patches, _ = x.size()
+        
+        # 生成位置索引（从0到num_patches-1）
+        pos = torch.arange(num_patches, dtype=torch.long).unsqueeze(0).expand(batch_size, -1) #(bn, num_patches), bn=2:
+        # [
+        # [0, 1, ..., 195],   # 第一个样本的位置索引
+        # [0, 1, ..., 195],   # 第二个样本的位置索引
+        # ]
+
+        # 获取对应位置编码，形状: (batch_size, num_patches, embed_dim)
+        pos_embedding = self.position_embedding[pos] #!注意不是()
+        
+        # 将位置编码与输入嵌入相加
+        return x + pos_embedding
+
+# 使用示例
+if __name__ == "__main__":
+    # 假设补丁数量为196（14x14），嵌入维度为768
+    embed_dim = 768
+    num_patches = 196
+    x = torch.randn(1, num_patches, embed_dim)  # 输入形状 (1, 196, 768)
+    
+    pe = PositionEmbedding(embed_dim, max_position=num_patches)
+    out = pe(x)
+    print(out.shape)  # 输出形状仍为 (1, 196, 768)
+    
 ```
 
 # 使用自定义的PatchEmbedding层
-```
+
 # 111. C++中与类型转换相关的4个关键字特点及应用场合
 
 ```c++
