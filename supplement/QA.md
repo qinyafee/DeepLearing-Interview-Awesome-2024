@@ -32,7 +32,10 @@ Anchor-free 检测范式，与传统的 Anchor-based 方法（如 PointPillars�
 https://zhuanlan.zhihu.com/p/524608535
 
 
-
+## 04.ResNet
+ResNet相较于传统的深度神经网络,引入了跳跃连接，从而使网络能够学习残差映射。这一设计有效缓解了深度 神 经 网 络 训 练 过 程 中 常 见 的 梯 度 消 失 （Gradient Vanishing） 和 梯 度 爆 炸（Gradient Explosion）问题;
+避免了随着网络深度增加而导致的训练效果下降现象。
+![alt text](image-7.png)
 
 ----------
 # 18. PyTorch 节省显存的常用策略

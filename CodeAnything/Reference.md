@@ -339,6 +339,12 @@ if __name__ == '__main__':
 
 Focal loss其实就是相当于给不同的概率，不同的权重来调整loss，从而让模型更加注意区分错误样本和难区分的样本。
 
+通用Focal Loss 公式为：
+\[
+FL = -\alpha_t (1 - p_t)^\gamma \log(p_t)
+\]
+• `p_t` 直接反映模型对正确预测的置信度。
+• `(1 - p_t)^\gamma` 抑制易分类样本（`p_t` 接近 1）的损失贡献，聚焦难样本。
 ```python
 
 import numpy as np

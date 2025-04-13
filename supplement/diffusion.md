@@ -1,4 +1,5 @@
-# 01. DDPM算法原理部分：
+# 原理
+## 01. DDPM算法原理部分：
 
 ![alt text](image-3.png)
 
@@ -20,7 +21,7 @@
 4. DDPM预测噪声还是预测当前分布？
 预测噪声，预测分布只是中间过程
 
-# 02. DDIM算法原理部分： 
+## 02. DDIM算法原理部分： 
 
 ![alt text](image.png)
 
@@ -32,7 +33,7 @@ DDIM通过保证DDPM的三项前向条件不变：前向⾼斯噪声+⻢尔可�
 是确定性⽣成。因为在逆向去噪声过程中，DDIM的逆推公式，将随机噪声的部分置为0
 多样性牺牲：确定性路径限制了输出的多样性。
 
-# 03. 其他
+## 03. 其他
 
 1. IDDPM通过噪声调度优化、混合损失函数和可学习方差三大改进，显著提升了DDPM的生成质量与效率。
 
@@ -43,7 +44,7 @@ DDIM通过保证DDPM的三项前向条件不变：前向⾼斯噪声+⻢尔可�
 通过ODE对扩散模型进⾏建模，通过解析解的形式解构扩散模型求解步骤
 
 
-# 02. 介绍一下stable diffusion的原理
+## 02. 介绍一下stable diffusion的原理
 
 Stable Diffusion 总共包含三个主要的组件，其中每个组件都拥有一个独立的神经网络：
 
@@ -65,19 +66,19 @@ Stable Diffusion 总共包含三个主要的组件，其中每个组件都拥有
 
 更详细请查阅[十分钟理解Stable Diffusion](https://www.ithome.com/0/668/981.htm)
 
-# 3. 为什么原⽣SD的控制效果不太好，需要引⼊如ControlNet的控制模型 
+## 3. 为什么原⽣SD的控制效果不太好，需要引⼊如ControlNet的控制模型 
 
 因为控制是⼀个隐性控制模型，通过CrossAttention的权重隐性引导⽣成结果，并不是完全控制
 
-# 20. Stable Diffusion里是如何用文本来控制生成的？
+## 20. Stable Diffusion里是如何用文本来控制生成的？
 
 Stable Diffusion是一种潜在扩散模型，主要通过自动编码器（VAE），U-Net以及文本编码器三个核心组件完成用文本来控制生成的图像。Unet的Attention模块Latent Feature和Context Embedding作为输入，将两者进行Cross Attenetion操作，将图像信息和文本信息进行了融合，整体上是一个经典的Transformer流程。
 
-# 21. Stable Diffusion相比Diffusion主要解决的问题是什么？
+## 21. Stable Diffusion相比Diffusion主要解决的问题是什么？
 
 Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输入到U-Net，这使得当图片尺寸以及time step t足够大时，Diffusion会非常的慢。
 
-# 22. Diffusion每一轮训练样本选择一个随机时间步长？
+## 22. Diffusion每一轮训练样本选择一个随机时间步长？
 
 1. ​提升模型泛化能力，​防止过拟合。随机时间步迫使模型 ​同时学习所有噪声水平 的去噪策略，避免仅擅长处理特定阶段的噪声（如仅能处理中等噪声水平），从而在生成时能稳定地从纯噪声逐步还原数据。随机化打破了时间步的顺序相关性，避免模型记忆特定噪声模式，增强对 ​未见数据 的适应能力
 2. ​平衡计算效率与效果。若固定时间步（如按顺序训练 t=1,2,...,T），需要 T 倍计算资源，而随机采样使每个批次均匀覆盖所有 t，显著减少训练时间；
@@ -88,22 +89,22 @@ Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输�
 
 模型在训练过程中 loss 会逐渐降低，越到后面 loss 的变化幅度越小。如果时间步长是递增的，那么必然会使得模型过多的关注较早的时间步长（因为早期 loss 大），而忽略了较晚的时间步长信息。
 
-# 23. Stable Diffusion 的核⼼优化是什么？
+## 23. Stable Diffusion 的核⼼优化是什么？
 
 通过VAE将特征映射到Latent Space，⼤幅减少运算量的同时还能保证⽣成质量。
 通过Unet实现对⽣成内容的引导
 
-# 24. 介绍⼀下SD，Dall-E2两者的异同
+## 24. 介绍⼀下SD，Dall-E2两者的异同
 
 Dalle2通过自回归的方式逐个预测像素点，最终生成符合描述的图像。
 SD加⼊了Latent-Space（⼤幅降低特征维度），以及交叉注意⼒机制+Unet的步骤，更精细更可控
 
-# 25. 介绍下classifier-free guidance和Classifier Guidance
+## 25. 介绍下classifier-free guidance和Classifier Guidance
 
 CFG训练时,除了常规带上文本训练外,一定概率s(10%)不要文本进行训练
 ![alt text](image-5.png)
 
-# 27. Stable Diffusion XL是一个二阶段的级联扩散模型，简述其工作流？
+## 27. Stable Diffusion XL是一个二阶段的级联扩散模型，简述其工作流？
 
 核⼼优化：
 接⼊级联的refiner模型+微调⽹络结构，⼤幅度提升⽣成质量。
@@ -118,7 +119,7 @@ CFG训练时,除了常规带上文本训练外,一定概率s(10%)不要文本进
 https://zhuanlan.zhihu.com/p/643420260
 
 
-# 50. DiT和Stable Diffusion的Unet条件引入方式有什么不同？例如文本条件生成图像？
+## 50. DiT和Stable Diffusion的Unet条件引入方式有什么不同？例如文本条件生成图像？
 
 ![DiT](image-1.png)
 
@@ -132,7 +133,7 @@ https://zhuanlan.zhihu.com/p/643420260
    1. ​交叉注意力（Cross Attention）为主, 将文本嵌入作为 ​Key-Value 对，图像latent空间特征作为 ​Query
    2. ​时间嵌入（Time Embedding）辅助
 
-# 51. hunyuan-DiT的优势
+## 51. hunyuan-DiT的优势
 
 | 对比维度       | Hunyuan-DiT                                                                 | 标准 DiT                                                                 | 技术来源        |
 |--------------------|---------------------------------------------------------------------------------|-----------------------------------------------------------------------------|---------------------|
@@ -146,7 +147,7 @@ https://zhuanlan.zhihu.com/p/643420260
 
 ---
 
-# 52. DDPM、Flow Matching（FM）和Rectified Flow（RF）三者的核心区别分析
+## 52. DDPM、Flow Matching（FM）和Rectified Flow（RF）三者的核心区别分析
 
 1. DDPM（去噪扩散概率模型）  
    • 基于扩散过程的马尔可夫链建模，通过逐步加噪（前向过程）和去噪（反向过程）实现生成。
@@ -170,7 +171,8 @@ https://zhuanlan.zhihu.com/p/643420260
      x_t = (1-t)x_0 + t\epsilon, \quad \epsilon \sim \mathcal{N}(0, I)
      \]
 
-# FID计算公式（越小越好）
+
+## FID计算公式（越小越好）
 
 FID（Fréchet Inception Distance）是一种用于评估生成模型质量的度量标准，特别是常用于评估生成对抗网络（GANs）的性能。它通过比较真实图像集和生成图像集之间的相似性来衡量生成模型的好坏。
 FID值越低，表示生成的图像与真实的图像越接近。
@@ -181,3 +183,31 @@ FID值越低，表示生成的图像与真实的图像越接近。
 \[
 FID = \| \mu_r - \mu_g \|^2 + Tr(\Sigma_r + \Sigma_g - 2(\Sigma_r \Sigma_g)^{1/2})
 \]
+
+# 开发
+
+## 53.MagicDrive研发进展
+•条件控制：
+￮天气：调用gpt进行识别 
+￮动态：复用论文中的处理方式
+￮静态：结合lms框架拓展类别，如虚线、实线等
+•数据预处理
+￮去畸变但不做虚拟相机：实验上效果更好，黑边小
+￮resize：加快训练读取速度
+￮保存在sensor_data/camera_undistort_resize
+
+## 53.MagicDriveDit研发进展
+
+•条件控制&数据预处理复用MagicDrive
+- 多阶段训练：
+  1. Stage1：可控图像生成，小分辨率  tfs
+  2. Stage2：可控视频生成，可变分辨率
+  3. Stage3：更高分辨率，更多帧数视频
+- 工作内容：
+  1. nuscenes效果复现
+  2. 自研数据适配：trackid引入，静态控制条件修改（from magicdrive）
+- 目前问题：
+  - 第一阶段分辨率设置有问题，变大后nan
+  - 第二阶段训练速度太慢，待优化
+- nan问题排查：图像生成&视频生成均会nan
+  - 异常批次跳过、梯度scale、降学习率2e-5以下
