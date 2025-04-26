@@ -12,57 +12,85 @@
 
 
 2. 在训练过程中，这些参数通过优化损失函数来更新。常见的损失函数包括：
-  渲染损失：通过比较渲染图像和目标图像之间的差异来计算损失。
-  正则化损失：用于防止过拟合，例如 L2 正则化。
-  几何损失：用于确保高斯散射点的几何结构合理，例如距离损失、平滑损失等。
+    渲染损失：通过比较渲染图像和目标图像之间的差异来计算损失。
+    正则化损失：用于防止过拟合，例如 L2 正则化。
+    几何损失：用于确保高斯散射点的几何结构合理，例如距离损失、平滑损失等。
 
-1. streetgs整体流程
 
-  ![alt text](image-4.png)
+3. streetgs整体流程
+    1. 预处理
+      1. generate streetguassians format data from raw bev4d format data
+      2. panda128点云建图/egopose优化/Generating LiDAR depth
+        1. 或者colmap，加上尺度估计
+      3. 静态车道线自动标注，mapQR
+      4. 动态障碍物自动标注，centerpoint+后处理
+      5. 语义分割、实例分割，detetron/mask2former，用车辆、地面、天空等像素分割结果做监督
+      6. 红绿灯标注，作为动态obj
+      7. 行人SMPL提取【PHALP(Predicting Human Appearance, Location and Pose)】【行人OD bbox来自于伪标签】
+    2. 3dgs重建
+      1. 7v、6v渲染
+      2. 2d_gaussian作为base
+      3. 时间加入傅里叶编码-->SH
+      4. loss：
+        1. 颜色rgb：ssmi + L1
+        2. 正则化：opacity sparse loss，0或1
+        3. scale loss
+        4. camera id rgb offset，解决相机曝光参数不一样的影响。
+        5. lidar_depth/
+        6. image depth: load_clomap_scale_depth
+        7. normal loss
+        8. semantic：gs点投影到图像上，sky、地面、object
+        9.  Pose 矫正
+    3. 渲染：
+       1. 渲染过程，没有z/roll/pitch信息输入（规划线是平面的），从3dgs点云地图抽取（需handle上下层的问题）
+    4. open3d，提取mesh
 
-  1. 预处理
-    1. generate streetguassians format data from raw bev4d format data
-    2. panda128点云建图/egopose优化/Generating LiDAR depth
-      1. 或者colmap，加上尺度估计
-    3. 静态车道线自动标注，mapQR
-    4. 动态障碍物自动标注，centerpoint+后处理
-    5. 语义分割、实例分割，detetron/mask2former，用车辆、地面、天空等像素分割结果做监督
-    6. 红绿灯标注，作为动态obj
-    7. 行人SMPL提取【PHALP(Predicting Human Appearance, Location and Pose)】
-  2. 3dgs重建
-    1. 7v、6v渲染
-    2. 2d_gaussian作为base
-    3. 时间加入傅里叶编码-->SH
-    4. loss：
-      1. 颜色rgb：ssmi + L1
-      2. 正则化：opacity sparse loss，0或1
-      3. scale loss
-      4. camera id rgb offset，解决相机曝光参数不一样的影响。
-      5. lidar_depth/
-      6. image depth: load_clomap_scale_depth
-      7. normal，以及depth_to_normal　loss
-      8. semantic：gs点投影到图像上，sky、地面、object
-      9.  Pose 矫正
-  3. 渲染
-  4. open3d，提取mesh
+4. normal监督
+   1. depth需要有绝对尺度，normal不需要
+   2. depth_to_normal，3d横纵向梯度： dx × dy [cam系的 normal]
+   3. image normal gt ： depth_to_normal 【可以不用】
+   4. normal predict ： 预测的cam 3d点深度 --> depth_to_normal 【法向自监督】
+   5. gaussian normal
+      1. 2dgs 椭球盘最短轴=z轴=0 
+      2. 3dgs最短轴。初始化scale=单位帧，优化后椭球体最短轴可能是任意轴。限制z轴是最短，效果变的很好
+      3. 通过cam外参R转 转到 cam normal
+   6. 
 
-2. normal监督
-   1. image depth --> cam系的 normal。depth_to_normal，3d横纵向： dx × dy
-   2. normal predict --> 预测的深度 --> depth
-
-3. streetgs模型包含
+5. streetgs模型包含
    1. background: scene_center + scene_radius
    2. obj
    3. smpl
    4. sky cube
-4. 加速方法
+
+6. 数据生产耗时,加速方法
+    ![alt text](image-4.png)
    1. Taming-3dgs，训练速度提升了近40%，模型大小减少5倍
       - 原版高斯是采用对每个像素进行从近到远的高斯投影计算，作者采用记录每个高斯的投影像素，在投影和梯度计算时，遍历高斯而非遍历像素在遍历高斯个数，减少耗时；
       - 对球协函数计算中分离 rgb和sh向量，进行稀疏换求导;
       - 基于得分的排序进行指导 高斯修剪策略，几何结构更好​； 与传统3DGS中仅依赖不透明度（α值）的剪枝（pruning）不同
-   2. 
+   2. 空间换时间：
+      1. parse_camera 函数中搜寻物体的方式 比较粗暴，寻找到了过多的当前相机在此frame下看不到的obj，此些obj 不会用于渲染优化，等于是空耗时间。
+      2. 在预处理中 已经将 obj所被看到的 frame 和 camera id 已经在文件中保存。
+   3. opt_track：动态场景不能关，obj渲染会模糊
+      1. 纯静态场景时候关掉
+      2. 
+   4. densification strategy 导致高斯球数量多
+      1. 多视角剔除+低于某个opacity剔除
+      2. 显存：16g -->2.4g
+   5. 最终30s bag/3090单卡：全链路=9h
+      1. 3dgs训练=2h
+      2. segment=1.2h
+      3. humanpose=1.3h
+   6. 存储
+      1. 预处理：60g
+      2. 训练结果：7g
+   7. 内存
+      1. platform  64G RAM + 3090(24G VRAM)
+      2. 30s bag: 16M * 300 * 7 + 2.0G ≈　35G
+      3. 50s bag   max: RAM 52G + VRAM 14G
+      4. 60s bag   killed 
 
-5. 行人重建/drivestudio
+7. 行人重建/drivestudio，输入依赖伪标签初始点云
   1. Gaussian scene graph
      1. 天空、背景
      2. 车辆
@@ -73,8 +101,24 @@
      2. 新视角变化太大，NVS质量差
   3. ![alt text](image-6.png)
 
-6. #TODO - 3dgs cornercase
+  4. 部署问题：正在制作docker镜像，当前遇到human_pose预处理在镜像中无法识别cuda设备的问题，正在排查
+8. #TODO - 3dgs cornercase
    1. 穿过透明玻璃，看到外界场景，车上有司机，更加奇怪
+
+9. 应对NVS
+   1. 多趟重建路口
+   2. drivedreamer系列
+
+10. 多趟重建问题
+  1.红绿灯状态，无法保证正确渲染（比如直行方向，红灯和绿灯同时点亮）；重建框架，也无法对红绿灯进行控制
+  2.多包重建，会遇到显存限制问题，目前通过抽帧和降分辨率方式规避；需进行多机多卡改造
+  3.目前是专车任务采集的bag，同地点，时间接近；规模化生产，对bag的时空数据库检索有依赖
+
+
+8. 3dgs重建本身局限性：
+  1.没有光线建模，无法分离光线
+  2.缺乏控制能力：红绿灯、汽车尾灯（白天/夜晚）、刹车灯、转向灯
+
 
 # 2. 2dgs
 1. 法向量自监督Loss的实现主要通过**多视角几何一致性约束**与**法线平滑性优化**两大核心机制完成
@@ -144,3 +188,30 @@ NeRF模型的训练参数包括但不限于：
 在实际实现中，具体的参数选择会根据数据集、硬件资源以及所需的性能而变化。NeRF训练过程可能会非常耗时，尤其是对于复杂的场景和高分辨率图像。因此，在实践中经常会使用GPU加速来提高训练效率。
 
 
+# 闭环仿真
+1. 当前完成：
+  UNP/泊车场景适配，行人重建、鱼眼渲染、多车型渲染等
+
+2. 重建能力边界：
+  光照/天气影响大，黑夜，雨天、雾霾天、反光、逆光质量较差
+  控制能力较差：红绿灯闪烁/数字，尾灯亮灭
+  3dgs是漫反射模型，无法表达发光物体，如车灯
+
+3. 渲染能力边界：
+  针孔相机，鱼眼相机135°
+  不支持lidar/radar/uss
+  lidar仿真：模拟FOV点云、前景遮挡、运动畸变、点云反射强度、高反膨胀等
+  变半个车道以内，尽量保证渲染质量（泛化测试效果差）
+  只能渲染障碍物可见面，并且依赖伪标签
+
+4. 当前依赖：
+  panda128顶部激光（标定要求高，同感知标注级别）
+  障碍物伪标签
+  部分人工标注（红绿灯）
+  预处理+训练：3090 10h （30s bag）
+  推理：3090 0.1s/一张图
+
+5. 闭环仿真用途
+   1. 目前是测试
+   2. 也可以用于强化学习训练？
+   3. 后面可提供训练数据给E2E

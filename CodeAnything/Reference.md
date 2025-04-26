@@ -192,7 +192,7 @@ class MultiHeadSelfAttention(nn.Module): #废弃
 - 计算 m*2 的矩阵与 n * 2 的矩阵中，m*2 的每一行到 n*2 的两两之间欧氏距离。
 
 ```python
-# L2 = sqrt((x1-x2)^2 + (y1-y2)^2 + (z1-z2)^2)
+# L2 = sqrt((x1-x2)^2 + (y1-y2)^2
 
 def L2_dist_1(cloud1, cloud2):
     m, n = len(cloud1), len(cloud2)
@@ -204,10 +204,18 @@ def L2_dist_1(cloud1, cloud2):
     # cloud1 = cloud1[:, None, :] # (m,1,2)
     
     # project 03
-    cloud1 = np.expand_dims(cloud1, 1)
+    cloud1 = np.expand_dims(cloud1, 1) # 形状从 (m,2) → (m,1,2)
     
     dist = np.sqrt(np.sum((cloud1 - cloud2)**2, axis=2))
+    #cloud2 形状为 (n, 2)，广播后变为 (1, n, 2)
+    #(cloud1 - cloud2).shape=(m,n,2)
+    #dist.shape=(m,n,2)
     return dist
+if __name__ == "__main__":
+    cloud1 = np.array([[1, 2], [3, 4], [5, 6]])
+    cloud2 = np.array([[7, 8], [9, 10], [11, 12], [13, 14]])
+    dist = L2_dist_1(cloud1, cloud2)
+    print(dist)
 ```
 
 # 03. Conv2D卷积的Python和C++实现
@@ -471,7 +479,7 @@ def soft_nms(bboxes, scores, iou_thresh, sigma=0.5, score_thresh=0.001):
 
 # 07. Python实现BN批量归一化
 
-实现BN需要求的：均值、方差、参数(shift)beta、参数(scale)gamma。
+实现BN需要求的：均值、方差、shift/beta、scale/gamma。
 
 ![Alt](assert/bn.png#pic_center)
 
@@ -825,7 +833,7 @@ model = nn.Sequential(
     nn.Linear(10, 5),
     nn.LeakyReLU(negative_slope=0.01),
     nn.Linear(5, 2)
-
+)
 ```
 
 # 32. PyTorch 实现图像到Patch Embedding过程，提示可用卷积实现？

@@ -72,7 +72,7 @@ Stable Diffusion 总共包含三个主要的组件，其中每个组件都拥有
 
 ## 20. Stable Diffusion里是如何用文本来控制生成的？
 
-Stable Diffusion是一种潜在扩散模型，主要通过自动编码器（VAE），U-Net以及文本编码器三个核心组件完成用文本来控制生成的图像。Unet的Attention模块Latent Feature和Context Embedding作为输入，将两者进行Cross Attenetion操作，将图像信息和文本信息进行了融合，整体上是一个经典的Transformer流程。
+Stable Diffusion是一种潜在扩散模型，主要通过自动编码器（VAE），U-Net以及文本编码器三个核心组件完成用文本来控制生成的图像。**Unet的Attention模块Latent Feature和Context Embedding作为输入，将两者进行Cross Attenetion操作**，将图像信息和文本信息进行了融合，整体上是一个经典的Transformer流程。
 
 ## 21. Stable Diffusion相比Diffusion主要解决的问题是什么？
 
@@ -82,17 +82,13 @@ Diffusion的缺点是在反向扩散过程中需要把完整尺寸的图片输�
 
 1. ​提升模型泛化能力，​防止过拟合。随机时间步迫使模型 ​同时学习所有噪声水平 的去噪策略，避免仅擅长处理特定阶段的噪声（如仅能处理中等噪声水平），从而在生成时能稳定地从纯噪声逐步还原数据。随机化打破了时间步的顺序相关性，避免模型记忆特定噪声模式，增强对 ​未见数据 的适应能力
 2. ​平衡计算效率与效果。若固定时间步（如按顺序训练 t=1,2,...,T），需要 T 倍计算资源，而随机采样使每个批次均匀覆盖所有 t，显著减少训练时间；
-实验表明，随机化策略可使模型在约 10 万次迭代后收敛，而固定顺序训练需要数百万次迭代。
+实验表明，随机化策略可使模型在约**10万次**迭代后收敛，而固定顺序训练需要数百万次迭代。
 
 ----
 训练过程包含：每一个训练样本选择一个随机时间步长，将time step 对应的高斯噪声应用到图片中，将time step转化为对应embedding；
 
 模型在训练过程中 loss 会逐渐降低，越到后面 loss 的变化幅度越小。如果时间步长是递增的，那么必然会使得模型过多的关注较早的时间步长（因为早期 loss 大），而忽略了较晚的时间步长信息。
 
-## 23. Stable Diffusion 的核⼼优化是什么？
-
-通过VAE将特征映射到Latent Space，⼤幅减少运算量的同时还能保证⽣成质量。
-通过Unet实现对⽣成内容的引导
 
 ## 24. 介绍⼀下SD，Dall-E2两者的异同
 
@@ -130,7 +126,7 @@ https://zhuanlan.zhihu.com/p/643420260
    3. Cross-attention block：将 t 和 c 的 embeddings 拼接起来，然后再插入一个cross attention，条件embeddings作为cross attention的key和value；这种方式需要额外引入15%的Gflops。
 
 2. Unet 【卷积+跳跃连接，模型深度和宽度受限】
-   1. ​交叉注意力（Cross Attention）为主, 将文本嵌入作为 ​Key-Value 对，图像latent空间特征作为 ​Query
+   1. ​交叉注意力（Cross Attention）为主, **将文本嵌入作为 ​Key-Value 对，图像latent空间特征作为 ​Query**
    2. ​时间嵌入（Time Embedding）辅助
 
 ## 51. hunyuan-DiT的优势
@@ -172,42 +168,114 @@ https://zhuanlan.zhihu.com/p/643420260
      \]
 
 
-## FID计算公式（越小越好）
+# 可控视频生成
 
-FID（Fréchet Inception Distance）是一种用于评估生成模型质量的度量标准，特别是常用于评估生成对抗网络（GANs）的性能。它通过比较真实图像集和生成图像集之间的相似性来衡量生成模型的好坏。
-FID值越低，表示生成的图像与真实的图像越接近。
+1. MagicDrive研发进展
+  1. •条件控制：
+    ￮天气：调用gpt进行识别 
+    ￮动态：复用论文中的处理方式
+    ￮静态：结合lms框架拓展类别，如虚线、实线等
+  2. •数据预处理，22W帧训练数据？
+    图像resize=2，1024x768->512x384
+    ￮去畸变但不做虚拟相机：实验上效果更好，黑边小
+    ￮resize：加快训练读取速度
+    ￮保存在sensor_data/camera_undistort_resize
 
-- 提取特征向量：首先使用预训练的Inception V3模型（通常是在ImageNet上训练的）提取真实图像和生成图像的特征向量。这个模型的输出层之前的某一层（通常是pool_3层）被用作特征提取器，因为这一层的输出包含了丰富的图像信息
-- 计算均值和协方差矩阵：对于从真实图像和生成图像中提取的所有特征向量
-- 计算FID分数
-\[
-FID = \| \mu_r - \mu_g \|^2 + Tr(\Sigma_r + \Sigma_g - 2(\Sigma_r \Sigma_g)^{1/2})
-\]
+  3. 已完成：
+    a.根据map object layout+文字prompt，生成不同相机下的单帧图片
+    b.可控制天气、光照、场景、object位置
 
-# 开发
+  4. TODO:
+    a.可输入参考帧
+    b.时序一致性约束，生成视频
+    c.拓展到城市，引入其他控制标签，如红绿灯、限速牌（2d/3d）
 
-## 53.MagicDrive研发进展
-•条件控制：
-￮天气：调用gpt进行识别 
-￮动态：复用论文中的处理方式
-￮静态：结合lms框架拓展类别，如虚线、实线等
-•数据预处理
-￮去畸变但不做虚拟相机：实验上效果更好，黑边小
-￮resize：加快训练读取速度
-￮保存在sensor_data/camera_undistort_resize
+2. MagicDriveDit模型侧：
+    Diffusion：Unet --> multiView-DiT
+    采样方式：DDPM --> Flow match
 
-## 53.MagicDriveDit研发进展
+3. MagicDriveDit研发进展
+  •条件控制&数据预处理复用MagicDrive
+  - 多阶段训练：
+    1. Stage1：可控图像生成，小分辨率  tfs
+    2. Stage2：可控视频生成，可变分辨率
+    3. Stage3：更高分辨率，更多帧数视频
+  - 工作内容：
+    1. nuscenes效果复现
+    2. 自研数据适配：trackid引入，静态控制条件修改（from magicdrive）
+  - 目前问题：
+    - 第一阶段分辨率设置有问题，变大后nan
+    - 第二阶段训练速度太慢，待优化
+  - nan问题排查：图像生成&视频生成均会nan
+    - 异常批次跳过、梯度scale、降学习率2e-5以下
 
-•条件控制&数据预处理复用MagicDrive
-- 多阶段训练：
-  1. Stage1：可控图像生成，小分辨率  tfs
-  2. Stage2：可控视频生成，可变分辨率
-  3. Stage3：更高分辨率，更多帧数视频
-- 工作内容：
-  1. nuscenes效果复现
-  2. 自研数据适配：trackid引入，静态控制条件修改（from magicdrive）
-- 目前问题：
-  - 第一阶段分辨率设置有问题，变大后nan
-  - 第二阶段训练速度太慢，待优化
-- nan问题排查：图像生成&视频生成均会nan
-  - 异常批次跳过、梯度scale、降学习率2e-5以下
+1. 3090帧率：12s/frame
+
+
+5. 存在问题
+   1. 伪标签会给出lidar可见但视觉不可见的车，对训练影响可能比较大
+   2. 红绿灯、限速牌等细节控制能力待研究
+   3. 多模态渲染较弱
+
+# 插入2d视频流
+
+![alt text](image-8.png)
+
+1. 生成资产问题
+   1. hunyuan 生成的模型一般尺寸 scale+角度不统一，需确定scale+统一坐标系；
+2. 重建资产
+   1. 3drealcar
+   2. streetgs重建
+
+3. 相机调参，blender
+   1. 调整物体的材质：金属度、粗糙度、粗糙度、法线贴图等，产生真实感
+   2. 
+4. 遮挡问题
+   1. 通过伪标签判断前景还是背景；有很多cornercase
+5. 位置稳定性
+   1. 光流跟踪
+6. 光影一致性
+   1. 给一个地面，使得插入物体产生阴影
+   2. 训练模型学习HDR
+   3. 使用HDR贴图
+
+7. 风格迁移
+   1. StyleShot，前后帧不一致；只有单cam
+
+
+# 生成式辅助重建
+https://lotuscars.feishu.cn/docx/QAOQdlFGNoZOlYxNGncccD0znpe
+1. ReconDreamer：DriveRestorer训练方式
+   1. 数据集：训练不充分的重建模型，沿原始轨迹渲染视频，由于模型欠拟合，自然会产生重影伪影，用gt图片监督
+   2. 基于构建的数据集，我们训练 DriveRestorer 来恢复渲染视频中的伪影。
+   3. 将训练好的模型，冻结其参数以恢复新的轨迹渲染图
+2. 方案问题：视角变化，worldmodel生成的场景，一致性如何？
+
+
+# 评测方式
+1. FID计算公式（越小越好）
+
+  FID（Fréchet Inception Distance）是一种用于评估生成模型质量的度量标准，特别是常用于评估生成对抗网络（GANs）的性能。它通过比较真实图像集和生成图像集之间的相似性来衡量生成模型的好坏。
+  FID值越低，表示生成的图像与真实的图像越接近。
+  note：该指标是分类任务的score，不同类别分别有FID指标；对于AD场景级别的评价，理论上并不合适；小鹏Anything，FID指标不能反映实际问题。
+
+  - 提取特征向量：首先使用预训练的Inception V3模型（通常是在ImageNet上训练的）提取真实图像和生成图像的特征向量。这个模型的输出层之前的某一层（通常是pool_3层）被用作特征提取器，因为这一层的输出包含了丰富的图像信息
+  - 计算均值和协方差矩阵：对于从真实图像和生成图像中提取的所有特征向量
+  - 计算FID分数
+  \[
+  FID = \| \mu_r - \mu_g \|^2 + Tr(\Sigma_r + \Sigma_g - 2(\Sigma_r \Sigma_g)^{1/2})
+  \]
+
+   FID反映了图像质量，而FVD是一个时间感知指标，它同时反映了图像质量和时间一致性。
+   
+2. 感知任务评测
+   1. 当前只针对重建视频的评测，NVS、生成图像评测未开展。
+   2. 车道线：原始bag检测结果作为真值，重建bag检测见过。
+      1. sim2real gap 只差一个点，重建质量对感知影响不大
+   3. 障碍物：是否替换actor？
+      1. 不替换。评价方法和车道线类似
+      2. 替换，没有参考意义。
+   4. nvs因为遮挡，真值不好搞
+3. 间接感知评测
+   1. 感知模型在real数据上训练，在real数据集上评测  
+   2. 感知模型在real+sim数据上训练，在real数据集上评测  
